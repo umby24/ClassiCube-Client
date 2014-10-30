@@ -1,8 +1,5 @@
 package com.mojang.minecraft.player;
 
-import static com.mojang.minecraft.net.NetworkPlayer.isInteger;
-
-import java.awt.image.BufferedImage;
 import java.util.List;
 
 import org.lwjgl.opengl.GL11;
@@ -11,6 +8,7 @@ import com.mojang.util.ColorCache;
 import com.mojang.minecraft.Entity;
 import com.mojang.minecraft.GameSettings;
 import com.mojang.minecraft.HackState;
+import com.mojang.minecraft.ThirdPersonMode;
 import com.mojang.minecraft.level.Level;
 import com.mojang.minecraft.level.tile.Block;
 import com.mojang.minecraft.level.tile.FireBlock;
@@ -20,9 +18,11 @@ import com.mojang.minecraft.model.HumanoidModel;
 import com.mojang.minecraft.model.Model;
 import com.mojang.minecraft.render.ShapeRenderer;
 import com.mojang.minecraft.render.TextureManager;
+import com.mojang.util.LogUtil;
 import com.mojang.util.MathHelper;
 
 public class Player extends Mob {
+
     public static final long serialVersionUID = 0L;
     public static final int MAX_HEALTH = 20;
     public static final int MAX_ARROWS = 99;
@@ -36,36 +36,33 @@ public class Player extends Mob {
     public float bob;
     public int score = 0;
     public int arrows = 20;
-    boolean HacksEnabled;
     boolean isOnIce = false;
-    private int flyTrig = 0;
-    private int noclipTrig = 0;
-    private int speedTrig = 0;
+
     private int jumpCount = 0;
 
-    public Player(Level var1, GameSettings gs) {
-        super(var1);
-        if (var1 != null) {
-            var1.player = this;
-            var1.removeEntity(this);
-            var1.addEntity(this);
+    public Player(Level level, GameSettings gs) {
+        super(level);
+        if (level != null) {
+            level.player = this;
+            level.removeEntity(this);
+            level.addEntity(this);
         }
 
         heightOffset = 1.62F;
         health = 20;
         modelName = "humanoid";
         rotOffs = 180F;
-        ai = new Player$1(this);
+        ai = new PlayerAI(this);
         settings = gs;
     }
 
-    public boolean addResource(int var1) {
-        return inventory.addResource(var1);
+    public boolean addResource(int amount) {
+        return inventory.addResource(amount);
     }
 
     @Override
     public void aiStep() {
-        if (settings.HackType == 0 || !(HackState.fly || HackState.speed || HackState.noclip)
+        if (settings.hackType == 0 || !(HackState.fly || HackState.speed || HackState.noclip)
                 && input.canMove) {
             inventory.tick();
             oBob = bob;
@@ -75,20 +72,20 @@ public class Player extends Mob {
             // your hacktype back to 'normal' in the options menu.
             super.aiStep();
 
-            float var1 = MathHelper.sqrt(xd * xd + zd * zd);
+            float horizDist = MathHelper.sqrt(xd * xd + zd * zd);
             float var2 = (float) Math.atan(-yd * 0.2F) * 15F;
-            if (var1 > 0.1F) {
-                var1 = 0.1F;
+            if (horizDist > 0.1F) {
+                horizDist = 0.1F;
             }
 
             if (!onGround || health <= 0) {
-                var1 = 0F;
+                horizDist = 0F;
             }
 
             if (onGround || health <= 0) {
                 var2 = 0F;
             }
-            bob += (var1 - bob) * 0.4F;
+            bob += (horizDist - bob) * 0.4F;
             tilt += (var2 - tilt) * 0.8F;
             List<?> neighbourEntities = level.findEntities(this, boundingBox.grow(1F, 0F, 1F));
             if (health > 0 && neighbourEntities != null) {
@@ -98,7 +95,6 @@ public class Player extends Mob {
             }
         } else {
             oBob = bob;
-            HacksEnabled = settings.HacksEnabled;
             input.updateMovement(1);
             super.aiStep();
             float fx = xd;
@@ -129,52 +125,30 @@ public class Player extends Mob {
             bob += (aaa - bob) * 0.4F;
             tilt += (bbb - tilt) * 0.8F;
 
-            speedTrig = -1; // speed
-            flyTrig = -1; // fly
-            noclipTrig = -1; // noclip
-            // -1 = yes, 1 = no
-
-            if (HackState.fly) {
-                flyTrig = -1;
-            } else {
-                flyTrig = 1;
-            }
-
-            if (HackState.speed) {
-                speedTrig = -1;
-            } else {
-                speedTrig = 1;
-            }
-
-            if (HackState.noclip) {
-                noclipTrig = -1;
-            } else {
-                noclipTrig = 1;
-            }
-            int i = 0;
-            int j = 0;
-            int k = 1;
-            float f1 = 1F;
+            boolean isFlying = false;
+            boolean isNoClipping = false;
+            boolean isSpeeding = true;
+            float speedMult = 1F;
             oBob = bob;
-            if (flyingMode && flyTrig < 1) {
-                i = 1;
+            if (flyingMode && HackState.fly) {
+                isFlying = true;
             }
-            if (noPhysics && noclipTrig < 0) {
-                j = 1;
+            if (noPhysics && HackState.noclip) {
+                isNoClipping = true;
             }
-            if (input.mult > 1F && speedTrig < 1) {
-                f1 = input.mult;
-            }
-
-            if (!HacksEnabled) {
-                i = 0;
-                j = 0;
-                k = 0;
-                f1 = 1F;
+            if (input.mult > 1F && HackState.speed) {
+                speedMult = input.mult;
             }
 
-            if (flyTrig > 0 || speedTrig > 0) {
-                k = 0;
+            if (!settings.hacksEnabled) {
+                isFlying = false;
+                isNoClipping = false;
+                isSpeeding = false;
+                speedMult = 1F;
+            }
+
+            if (!HackState.fly || !HackState.speed) {
+                isSpeeding = false;
             }
 
             xo = x;
@@ -183,34 +157,31 @@ public class Player extends Mob {
             xRotO = xRot;
             yRotO = yRot;
 
-            boolean bool1 = isInWater();
-            boolean bool2 = isInLava();
-            boolean bool3 = isInOrOnRope();
-
-            float f2 = 0F;
+            boolean inWater = isInWater();
+            boolean inLava = isInLava();
+            boolean onRope = isInOrOnRope();
 
             // this.input.updateMovement(1);
-
-            if (i != 0 || j != 0) {
+            if (isFlying || isNoClipping) {
                 yd = input.elevate;
             }
 
-            if (onGround || i != 0) {
+            if (onGround || isFlying) {
                 jumpCount = 0;
             }
 
             if (input.jump) {
-                if (bool1) {
+                if (inWater) {
                     yd += 0.08F;
-                } else if (bool3) {
+                } else if (onRope) {
                     yd += 0.06F;
-                } else if (bool2) {
+                } else if (inLava) {
                     yd += 0.07F;
-                } else if (i != 0) {
+                } else if (isFlying) {
                     yd += 0.05F;
                 } else if (onGround) {
                     if (!input.fall) {
-                        if (!HacksEnabled && k != 0) {
+                        if (!settings.hacksEnabled && isSpeeding) {
                             yd = 0.48F;
                         } else {
                             yd = 0.35F;
@@ -218,7 +189,7 @@ public class Player extends Mob {
                         input.fall = true;
                         jumpCount += 1;
                     }
-                } else if (HacksEnabled && !input.fall && k != 0 && jumpCount < 3) {
+                } else if (settings.hacksEnabled && !input.fall && isSpeeding && jumpCount < 3) {
                     yd = 0.5F;
                     input.fall = true;
                     jumpCount += 1;
@@ -227,80 +198,80 @@ public class Player extends Mob {
                 input.fall = false;
             }
 
-            if (HacksEnabled && k != 0 && jumpCount > 1) {
-                f1 *= 2.5F;
+            if (settings.hacksEnabled && isSpeeding && jumpCount > 1) {
+                speedMult *= 2.5F;
                 if (!isOnIce) {
-                    f1 *= jumpCount;
+                    speedMult *= jumpCount;
                 } else {
                     jumpCount = 0;
                 }
             }
 
-            if (bool1 && i == 0 && j == 0) {
-                f2 = y;
-                super.moveRelative(input.strafe, input.move, 0.02F * f1);
-                super.move(xd * f1, yd * f1, zd * f1);
+            if (inWater && !isFlying && !isNoClipping) {
+                float oldY = y;
+                super.moveRelative(input.strafe, input.move, 0.02F * speedMult);
+                super.move(xd * speedMult, yd * speedMult, zd * speedMult);
                 xd *= 0.8F;
                 yd *= 0.8F;
                 zd *= 0.8F;
                 yd = (float) (yd - 0.02D);
-                if (horizontalCollision && isFree(xd, yd + 0.6F - y + f2, zd)) {
+                if (horizontalCollision && isFree(xd, yd + 0.6F - y + oldY, zd)) {
                     yd = 0.3F;
                 }
                 return;
             }
 
-            if (bool2 && i == 0 && j == 0) {
-                f2 = y;
-                super.moveRelative(input.strafe, input.move, 0.02F * f1);
-                super.move(xd * f1, yd * f1, zd * f1);
+            if (inLava && !isFlying && !isNoClipping) {
+                float oldY = y;
+                super.moveRelative(input.strafe, input.move, 0.02F * speedMult);
+                super.move(xd * speedMult, yd * speedMult, zd * speedMult);
                 xd *= 0.5F;
                 yd *= 0.5F;
                 zd *= 0.5F;
                 yd = (float) (yd - 0.02D);
-                if (horizontalCollision && isFree(xd, yd + 0.6F - y + f2, zd)) {
+                if (horizontalCollision && isFree(xd, yd + 0.6F - y + oldY, zd)) {
                     yd = 0.3F;
                 }
                 return;
             }
 
-            if (i != 0) {
-                f1 = (float) (f1 * 1.2D);
+            if (isFlying) {
+                speedMult *= 1.2f;
             }
 
             float f4 = 0F;
-            float f3 = 0F;
-            if (j != 0) {
-                f4 = i != 0 ? 0.72F : 0.71F;
-                if (i != 0) {
+            float speedScale;
+            if (isNoClipping) {
+                f4 = isFlying ? 0.72F : 0.71F;
+                if (isFlying) {
                     yd = input.elevate;
                 }
-                f3 = 0.2F;
-            } else if (onGround || jumpCount > 0 || i != 0) {
-                f3 = 0.1F;
+                speedScale = 0.2F;
+            } else if (onGround || jumpCount > 0 || isFlying) {
+                speedScale = 0.1F;
             } else {
-                f3 = 0.02F;
+                speedScale = 0.02F;
             }
 
-            super.moveRelative(input.strafe, input.move, f3 * f1);
+            super.moveRelative(input.strafe, input.move, speedScale * speedMult);
 
-            if (j != 0 && (xd != 0F || zd != 0F)) {
+            if (isNoClipping && (xd != 0F || zd != 0F)) {
                 super.moveTo(x + xd, y + yd - f4, z + zd, yRot, xRot);
                 yo = y += f4;
             } else {
-                super.move(xd * f1, yd * f1, zd * f1);
+                super.move(xd * speedMult, yd * speedMult, zd * speedMult);
             }
-            int var1 = level.getTile((int) x, (int) (y - 2.12F), (int) z);
-            if (Block.blocks[var1] != Block.ICE) {
+            int tileBelow = level.getTile((int) x, (int) (y - 2.12F), (int) z);
+            if (Block.blocks[tileBelow] != Block.ICE) {
                 if (jumpCount == 0) {
                     isOnIce = false;
                 }
-                f2 = 0.6F;
+                float f2 = 0.6F;
                 xd *= 0.91F;
                 yd *= 0.98F;
                 zd *= 0.91F;
 
-                if (i != 0) {
+                if (isFlying) {
                     yd *= f2 / 4F;
                     walkDist = 0F;
                 } else {
@@ -315,54 +286,40 @@ public class Player extends Mob {
         }
     }
 
+    // SURVIVAL: scoring
     @Override
-    public void awardKillScore(Entity var1, int score) {
+    public void awardKillScore(Entity victim, int score) {
         this.score += score;
     }
 
     @Override
     public void bindTexture(TextureManager textureManager) {
         if (newTexture != null) {
-            BufferedImage var2 = newTexture;
-            int[] var3 = new int[512];
-            var2.getRGB(32, 0, 32, 16, var3, 0, 32);
-            int var5 = 0;
+            hasHair = checkForHat(newTexture);
 
-            boolean var10001;
-            while (true) {
-                if (var5 >= var3.length) {
-                    var10001 = false;
-                    break;
-                }
-                if (var3[var5] >>> 24 < 128) {
-                    var10001 = true;
-                    break;
-                }
-                ++var5;
-            }
-            hasHair = var10001;
-
-            if (modelName.equals("humanoid")) {
-                newTextureId = textureManager.load(newTexture);
-            }
+            //if (modelName.equals("humanoid")) {
+            newTextureId = textureManager.load(newTexture);
+            //}
             newTexture = null;
         }
+
+        // modelName is a block number
         if (isInteger(modelName)) {
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/terrain.png"));
             return;
-        } else if (!modelName.startsWith("humanoid")) {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-                    textureManager.load("/mob/" + modelName.replace('.', '_') + ".png"));
-            return;
         }
-        int var2;
+
+        int boundTextureId;
         if (newTextureId < 0) {
-            var2 = textureManager.load("/char.png");
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, var2);
+            if (modelName.equals("humanoid") || defaultTexture) {
+                boundTextureId = textureManager.load("/char.png");
+            } else {
+                boundTextureId = textureManager.load("/mob/" + modelName.replace('.', '_') + ".png");
+            }
         } else {
-            var2 = newTextureId;
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, var2);
+            boundTextureId = newTextureId;
         }
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, boundTextureId);
     }
 
     @Override
@@ -416,157 +373,174 @@ public class Player extends Mob {
     }
 
     @Override
-    public void render(TextureManager textureManager, float var2) {
-        if (settings.thirdPersonMode == 0) {
+    public void render(TextureManager textureManager, float delta) {
+        // A body only needs to be rendered when player is in third-person view
+        // and modelName is set.
+        if (settings.thirdPersonMode == ThirdPersonMode.NONE || modelName == null) {
             return;
         }
-        if (modelName != null) {
-            float var3;
-            if ((var3 = attackTime - var2) < 0F) {
-                var3 = 0F;
-            }
 
-            while (yBodyRotO - yBodyRot < -180F) {
-                yBodyRotO += 360F;
-            }
+        float var3 = attackTime - delta;
+        if (var3 < 0F) {
+            var3 = 0F;
+        }
 
-            while (yBodyRotO - yBodyRot >= 180F) {
-                yBodyRotO -= 360F;
-            }
+        // Clip all rotation variables to [-180,180) range.
+        while (yBodyRotO - yBodyRot < -180F) {
+            yBodyRotO += 360F;
+        }
 
-            while (xRotO - xRot < -180F) {
-                xRotO += 360F;
-            }
+        while (yBodyRotO - yBodyRot >= 180F) {
+            yBodyRotO -= 360F;
+        }
 
-            while (xRotO - xRot >= 180F) {
-                xRotO -= 360F;
-            }
+        while (xRotO - xRot < -180F) {
+            xRotO += 360F;
+        }
 
-            while (yRotO - yRot < -180F) {
-                yRotO += 360F;
-            }
+        while (xRotO - xRot >= 180F) {
+            xRotO -= 360F;
+        }
 
-            while (yRotO - yRot >= 180F) {
-                yRotO -= 360F;
-            }
+        while (yRotO - yRot < -180F) {
+            yRotO += 360F;
+        }
 
-            float var4 = yBodyRotO + (yBodyRot - yBodyRotO) * var2;
-            float var5 = oRun + (run - oRun) * var2;
-            float var6 = yRotO + (yRot - yRotO) * var2;
-            float var7 = xRotO + (xRot - xRotO) * var2;
-            var6 -= var4;
-            GL11.glPushMatrix();
-            float var8 = animStepO + (animStep - animStepO) * var2;
-            ColorCache c = getBrightnessColor();
+        while (yRotO - yRot >= 180F) {
+            yRotO -= 360F;
+        }
 
-            GL11.glColor3f(c.R, c.G, c.B);
-            float var9 = 0.0625F; // 1 / 16
-            float var10 = -Math.abs(MathHelper.cos(var8 * 0.6662F)) * 5F * var5 * bobStrength - 23F;
-            GL11.glTranslatef(xo + (x - xo) * var2, yo + (y - yo) * var2 - 1.62F + renderOffset, zo
-                    + (z - zo) * var2);
-            float var11;
-            if ((var11 = hurtTime - var2) > 0F || health <= 0) {
-                if (var11 < 0F) {
-                    var11 = 0F;
-                } else {
-                    var11 /= hurtDuration;
-                    var11 = MathHelper.sin(var11 * var11 * var11 * var11 * (float) Math.PI) * 14F;
-                }
+        // Update rotation angles
+        float var4 = yBodyRotO + (yBodyRot - yBodyRotO) * delta;
+        float var5 = oRun + (run - oRun) * delta;
+        float yawDegrees = yRotO + (yRot - yRotO) * delta;
+        float pitchDegrees = xRotO + (xRot - xRotO) * delta;
+        yawDegrees -= var4;
+        float var8 = animStepO + (animStep - animStepO) * delta;
 
-                float var12 = 0F;
-                if (health <= 0) {
-                    var12 = (deathTime + var2) / 20F;
-                    var11 += var12 * var12 * 800F;
-                    if (var11 > 90F) {
-                        var11 = 90F;
-                    }
-                }
+        GL11.glPushMatrix();
+        ColorCache c = getBrightnessColor();
+        GL11.glColor3f(c.R, c.G, c.B);
 
-                var12 = hurtDir;
-                GL11.glRotatef(180F - var4 + rotOffs + 45, 0F, 1F, 0F);
-                GL11.glScalef(1F, 1F, 1F);
-                GL11.glRotatef(-var12, 0F, 1F, 0F);
-                GL11.glRotatef(-var11, 0F, 0F, 1F);
-                GL11.glRotatef(var12, 0F, 1F, 0F);
-                GL11.glRotatef(-(180F - var4 + rotOffs), 0F, 1F, 0F);
-            }
+        float scale = 0.0625F; // 1 / 16
+        float var10 = -Math.abs(MathHelper.cos(var8 * 0.6662F)) * 5F * var5 * bobStrength - 23F;
+        GL11.glTranslatef(xo + (x - xo) * delta,
+                yo + (y - yo) * delta - 1.62F + renderOffset,
+                zo + (z - zo) * delta);
 
-            GL11.glTranslatef(0F, -var10 * var9, 0F);
-            GL11.glScalef(1F, -1F, 1F);
-            GL11.glRotatef(180F - var4 + rotOffs, 0F, 1F, 0F);
-            if (!allowAlpha) {
-                GL11.glDisable(GL11.GL_ALPHA_TEST);
+        // SURVIVAL: hurt/death effect
+        float var11 = hurtTime - delta;
+        if (var11 > 0F || health <= 0) {
+            if (var11 < 0F) {
+                var11 = 0F;
             } else {
-                GL11.glDisable(GL11.GL_CULL_FACE);
+                var11 /= hurtDuration;
+                var11 = MathHelper.sin(var11 * var11 * var11 * var11 * (float) Math.PI) * 14F;
             }
 
-            GL11.glScalef(-1F, 1F, 1F);
-            modelCache.getModel(modelName).attackOffset = var3 / 5F;
+            if (health <= 0) {
+                float var12 = (deathTime + delta) / 20F;
+                var11 += var12 * var12 * 800F;
+                if (var11 > 90F) {
+                    var11 = 90F;
+                }
+            }
+
+            GL11.glRotatef(180F - var4 + rotOffs + 45, 0F, 1F, 0F);
+            GL11.glScalef(1F, 1F, 1F);
+            GL11.glRotatef(-hurtDir, 0F, 1F, 0F);
+            GL11.glRotatef(-var11, 0F, 0F, 1F);
+            GL11.glRotatef(hurtDir, 0F, 1F, 0F);
+            GL11.glRotatef(-(180F - var4 + rotOffs), 0F, 1F, 0F);
+        }
+
+        GL11.glTranslatef(0F, -var10 * scale, 0F);
+        GL11.glScalef(1F, -1F, 1F);
+        GL11.glRotatef(180F - var4 + rotOffs, 0F, 1F, 0F);
+        if (!allowAlpha) {
+            GL11.glDisable(GL11.GL_ALPHA_TEST);
+        } else {
+            GL11.glDisable(GL11.GL_CULL_FACE);
+        }
+
+        GL11.glScalef(-1F, 1F, 1F);
+        modelCache.getModel(modelName).attackOffset = var3 / 5F;
+        bindTexture(textureManager);
+        renderModel(textureManager, var8, delta, var5, yawDegrees, pitchDegrees, scale);
+        if (invulnerableTime > invulnerableDuration - 10) {
+            GL11.glColor4f(1F, 1F, 1F, 0.75F);
+            GL11.glEnable(GL11.GL_BLEND);
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
             bindTexture(textureManager);
-            renderModel(textureManager, var8, var2, var5, var6, var7, var9);
-            if (invulnerableTime > invulnerableDuration - 10) {
-                GL11.glColor4f(1F, 1F, 1F, 0.75F);
-                GL11.glEnable(GL11.GL_BLEND);
-                GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE);
-                bindTexture(textureManager);
-                renderModel(textureManager, var8, var2, var5, var6, var7, var9);
-                GL11.glDisable(GL11.GL_BLEND);
-                GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
-            }
+            renderModel(textureManager, var8, delta, var5, yawDegrees, pitchDegrees, scale);
+            GL11.glDisable(GL11.GL_BLEND);
+            GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
+        }
 
-            GL11.glEnable(GL11.GL_ALPHA_TEST);
-            if (allowAlpha) {
-                GL11.glEnable(GL11.GL_CULL_FACE);
-            }
+        GL11.glEnable(GL11.GL_ALPHA_TEST);
+        if (allowAlpha) {
+            GL11.glEnable(GL11.GL_CULL_FACE);
+        }
 
-            GL11.glColor4f(1F, 1F, 1F, 1F);
-            GL11.glPopMatrix();
+        GL11.glColor4f(1F, 1F, 1F, 1F);
+        GL11.glPopMatrix();
+    }
+
+    @Override
+    public void renderModel(TextureManager textures, float var2, float var3, float var4,
+            float yawDegrees, float pitchDegrees, float scale) {
+        
+        // Render block model
+        if (isInteger(modelName)) {
+            renderBlock(textures);
+            return;
+        }
+        
+        // Render the rest of the model
+        Model model = modelCache.getModel(modelName);
+        model.render(var2, var4, tickCount + var3, yawDegrees, pitchDegrees, scale);
+        
+        // If model is humanoid, render its outer layer ("hair")
+        if (hasHair && model instanceof HumanoidModel) {
+            GL11.glDisable(GL11.GL_CULL_FACE);
+            HumanoidModel modelHeadwear = (HumanoidModel) model;
+            modelHeadwear.headwear.yaw = modelHeadwear.head.yaw;
+            modelHeadwear.headwear.pitch = modelHeadwear.head.pitch;
+            modelHeadwear.headwear.render(scale);
+            GL11.glEnable(GL11.GL_CULL_FACE);
         }
     }
 
-
-    @Override
-    public void renderModel(TextureManager var1, float var2, float var3, float var4, float var5,
-                            float var6, float var7) {
-        if (isInteger(modelName)) {
-            try {
-                GL11.glEnable(GL11.GL_ALPHA_TEST);
-                GL11.glEnable(GL11.GL_BLEND);
-                GL11.glPushMatrix();
-
-                // These are here to revert the scalef calls in Mob.java.
-                // While those calls are useful for entity models, they cause the
-                // block models to be rendered upside down.
-                GL11.glScalef(-1F, 1F, 1F);
-                GL11.glScalef(1F, -1F, 1F);
-                Block block = Block.blocks[Integer.parseInt(modelName)];
-                // TODO: Implement proper detection of which blocks need translation.
-                float yTranslation = -1.4F;
-                if (block instanceof FlowerBlock || block instanceof FireBlock) {
-                    yTranslation = -1.8F;
-                }
-                GL11.glTranslatef(-0.5F, yTranslation, -0.2F);
-                GL11.glBindTexture(GL11.GL_TEXTURE_2D, var1.load("/terrain.png"));
-
-                block.renderPreview(ShapeRenderer.instance);
-                GL11.glPopMatrix();
-                GL11.glDisable(GL11.GL_BLEND);
-            } catch (Exception e) {
-                modelName = "humanoid";
+    private void renderBlock(TextureManager textures) {
+        try {
+            GL11.glEnable(GL11.GL_ALPHA_TEST);
+            GL11.glEnable(GL11.GL_BLEND);
+            GL11.glPushMatrix();
+            
+            // These are here to revert the scalef calls in Mob.java.
+            // While those calls are useful for entity models, they cause the
+            // block models to be rendered upside down.
+            GL11.glScalef(-1F, 1F, 1F);
+            GL11.glScalef(1F, -1F, 1F);
+            Block block = Block.blocks[Integer.parseInt(modelName)];
+            // TODO: Implement proper detection of which blocks need translation.
+            float yTranslation = -1.4F;
+            if (block instanceof FlowerBlock || block instanceof FireBlock) {
+                yTranslation = -1.8F;
             }
-            return;
+            GL11.glTranslatef(-0.5F, yTranslation, -0.2F);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, textures.load("/terrain.png"));
+            
+            block.renderPreview(ShapeRenderer.instance);
+            GL11.glPopMatrix();
+            GL11.glDisable(GL11.GL_BLEND);
+        } catch (Exception e) {
+            String msg = String.format(
+                    "Could not use block model \"%s\"; using humanoid model instead.",
+                    modelName);
+            LogUtil.logWarning(msg, e);
+            modelName = "humanoid";
         }
-        Model model = modelCache.getModel(modelName);
-        if (hasHair && model instanceof HumanoidModel) {
-            GL11.glDisable(GL11.GL_CULL_FACE);
-            HumanoidModel modelHeadwear = null;
-            modelHeadwear = (HumanoidModel) model;
-            modelHeadwear.headwear.yaw = modelHeadwear.head.yaw;
-            modelHeadwear.headwear.pitch = modelHeadwear.head.pitch;
-            modelHeadwear.headwear.render(var7);
-            GL11.glEnable(GL11.GL_CULL_FACE);
-        }
-        model.render(var2, var4, tickCount + var3, var5, var6, var7);
     }
 
     @Override
@@ -582,7 +556,7 @@ public class Player extends Mob {
         deathTime = 0;
     }
 
-    public void setKey(int var1, boolean var2) {
-        input.setKeyState(var1, var2);
+    public void setKey(int key, boolean state) {
+        input.setKeyState(key, state);
     }
 }

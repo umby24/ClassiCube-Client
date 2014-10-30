@@ -1,6 +1,5 @@
 package com.mojang.minecraft.net;
 
-import java.awt.image.BufferedImage;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -18,12 +17,11 @@ public class NetworkPlayer extends HumanoidMob {
     public String name;
     public String displayName;
     public String SkinName = null;
-    int tickCount = 0;
-    private transient Minecraft minecraft;
+    private final transient Minecraft minecraft;
     private int xp;
     private int yp;
     private int zp;
-    private transient int a = -1;
+    private transient int newTextureId = -1;
     private transient TextureManager textures;
 
     public NetworkPlayer(Minecraft minecraft, String displayName, int x, int y, int z,
@@ -44,24 +42,15 @@ public class NetworkPlayer extends HumanoidMob {
         armor = helmet = false;
         renderOffset = 0.6875F;
         allowAlpha = false;
-        /*if (name.equalsIgnoreCase("Jonty800") || name.equalsIgnoreCase("Jonty800+")
-         || name.equalsIgnoreCase("Jonty800@")) {
-         modelName = "sheep";
-         }*/
+        if (name.equalsIgnoreCase("Jonty800") || name.equalsIgnoreCase("Jonty800+")
+                || name.equalsIgnoreCase("Jonty800@")) {
+            modelName = "sheep";
+        }
         if (modelName.equals("humanoid")) {
             downloadSkin();
         } else if (isInteger(modelName)) {
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, minecraft.textureManager.load("/terrain.png"));
         }
-    }
-
-    public static boolean isInteger(String s) {
-        try {
-            Integer.parseInt(s);
-        } catch (NumberFormatException e) {
-            return false;
-        }
-        return true;
     }
 
     @Override
@@ -82,53 +71,34 @@ public class NetworkPlayer extends HumanoidMob {
     public void bindTexture(TextureManager textureManager) {
         textures = textureManager;
         if (newTexture != null) {
-            BufferedImage var2 = newTexture;
-            int[] var3 = new int[512];
-            var2.getRGB(32, 0, 32, 16, var3, 0, 32);
-            int var5 = 0;
+            hasHair = checkForHat(newTexture);
 
-            boolean var10001;
-            while (true) {
-                if (var5 >= var3.length) {
-                    var10001 = false;
-                    break;
-                }
-
-                if (var3[var5] >>> 24 < 128) {
-                    var10001 = true;
-                    break;
-                }
-
-                ++var5;
-            }
-
-            hasHair = var10001;
-            if (modelName.equals("humanoid")) {
-                a = textureManager.load(newTexture);
-            }
+            //if (modelName.equals("humanoid")) {
+            newTextureId = defaultTexture ? -1 : textureManager.load(newTexture);
+            //}
             newTexture = null;
         }
         if (isInteger(modelName)) {
             GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/terrain.png"));
             return;
-        } else if (!modelName.startsWith("humanoid")) {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-                    textureManager.load("/mob/" + modelName.replace('.', '_') + ".png"));
-            return;
         }
-        if (a < 0) {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/char.png"));
+        if (newTextureId < 0) {
+            if ("humanoid".equals(modelName)) {
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/char.png"));
+            } else {
+                GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/mob/" + modelName.replace('.', '_') + ".png"));
+            }
         } else {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, a);
+            GL11.glBindTexture(GL11.GL_TEXTURE_2D, newTextureId);
         }
     }
 
     public void clear() {
-        if (a >= 0 && textures != null) {
+        if (newTextureId >= 0 && textures != null) {
             TextureManager textureManager = textures;
-            textureManager.textureImages.remove(Integer.valueOf(a));
+            textureManager.textureImages.remove(newTextureId);
             textureManager.idBuffer.clear();
-            textureManager.idBuffer.put(a);
+            textureManager.idBuffer.put(newTextureId);
             textureManager.idBuffer.flip();
             GL11.glDeleteTextures(textureManager.idBuffer);
         }
@@ -137,7 +107,11 @@ public class NetworkPlayer extends HumanoidMob {
 
     public void downloadSkin() {
         String skinToDownload = (SkinName == null ? name : SkinName);
-        new SkinDownloadThread(this, skinToDownload, minecraft.skinServer).start();
+        downloadSkin(minecraft.skinServer + skinToDownload + ".png");
+    }
+
+    public void downloadSkin(String URL) {
+        new SkinDownloadThread(this, URL).start();
     }
 
     public void queue(byte x, byte y, byte z) {
@@ -214,7 +188,7 @@ public class NetworkPlayer extends HumanoidMob {
                 + (z - zo) * var1);
         GL11.glRotatef(-minecraft.player.yRot, 0F, 1F, 0F);
         GL11.glRotatef(-minecraft.player.xRot, 1F, 0F, 0F);
-        if (minecraft.settings.ShowNames == 1 || minecraft.settings.ShowNames == 3
+        if (minecraft.settings.showNames == 1 || minecraft.settings.showNames == 3
                 && minecraft.player.userType >= 100) {
             GL11.glScalef(var1, -var1, var1);
         } else {
@@ -238,7 +212,7 @@ public class NetworkPlayer extends HumanoidMob {
         GL11.glDepthMask(true);
         GL11.glDepthFunc(GL11.GL_LEQUAL);
         GL11.glTranslatef(1F, 1F, -0.05F);
-        fontRenderer.renderNoShadow(name, 0, 0, 5263440); // #505050
+        fontRenderer.renderNoShadow(displayName.replaceAll("(&[0-9a-g])", ""), 0, 0, 5263440); // #505050
         GL11.glEnable(GL11.GL_LIGHT0);
         GL11.glEnable(GL11.GL_LIGHTING);
         GL11.glPopMatrix();

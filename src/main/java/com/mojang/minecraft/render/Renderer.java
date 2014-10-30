@@ -5,6 +5,7 @@ import com.mojang.minecraft.GameSettings;
 import com.mojang.minecraft.Minecraft;
 import com.mojang.minecraft.MovingObjectPosition;
 import com.mojang.minecraft.SelectionBoxData;
+import com.mojang.minecraft.ThirdPersonMode;
 import com.mojang.minecraft.level.liquid.LiquidType;
 import com.mojang.minecraft.level.tile.Block;
 import com.mojang.minecraft.physics.AABB;
@@ -20,41 +21,45 @@ import org.lwjgl.BufferUtils;
 import org.lwjgl.opengl.GL11;
 
 public final class Renderer {
-    // TODO: adaptive chunk update rate, based on framerate
-    public static final int MAX_CHUNK_UPDATES_PER_FRAME = 4;
-
+    // Chunk update timing
+    public static final int MIN_CHUNK_UPDATES_PER_FRAME = 4;
+    public int dynamicChunkUpdateLimit = MIN_CHUNK_UPDATES_PER_FRAME;
+    public boolean everBackedOffFromChunkUpdates= false;
+    
+    // fog
+    private static final float LAVA_FOG_DENSITY = 1.8F;
+    private static final float WATER_FOG_DENSITY = 0.1F;
+    public float fogRed, fogBlue, fogGreen;
+    public float fogEnd = 0F;
+    
     public Minecraft minecraft;
     public float fogColorMultiplier = 1F;
     public boolean displayActive = false;
-    public float fogEnd = 0F;
     public HeldBlock heldBlock;
     public int levelTicks;
     public Entity entity = null;
     public Random random = new Random();
-    public float fogRed;
-    public float fogBlue;
-    public float fogGreen;
-    private FloatBuffer buffer = BufferUtils.createFloatBuffer(16);
+    private final FloatBuffer buffer = BufferUtils.createFloatBuffer(16);
 
     public Renderer(Minecraft minecraft) {
         this.minecraft = minecraft;
         heldBlock = new HeldBlock(minecraft);
     }
 
-    public void applyBobbing(float var1, boolean enabled) {
+    public void applyBobbing(float delta, boolean isEnabled) {
         Player player = minecraft.player;
         float var2 = player.walkDist - player.walkDistO;
-        var2 = player.walkDist + var2 * var1;
-        float var3 = player.oBob + (player.bob - player.oBob) * var1;
-        float var5 = player.oTilt + (player.tilt - player.oTilt) * var1;
-        if (enabled) {
-            GL11.glTranslatef(MathHelper.sin(var2 * (float) Math.PI) * var3 * 0.5F,
-                    -Math.abs(MathHelper.cos(var2 * (float) Math.PI) * var3), 0F);
-            GL11.glRotatef(MathHelper.sin(var2 * (float) Math.PI) * var3 * 3F, 0F, 0F, 1F);
-            GL11.glRotatef(Math.abs(MathHelper.cos(var2 * (float) Math.PI + 0.2F) * var3) * 5F, 1F,
+        var2 = player.walkDist + var2 * delta;
+        float newBob = player.oBob + (player.bob - player.oBob) * delta;
+        float newTilt = player.oTilt + (player.tilt - player.oTilt) * delta;
+        if (isEnabled) {
+            GL11.glTranslatef(MathHelper.sin(var2 * (float) Math.PI) * newBob * 0.5F,
+                    -Math.abs(MathHelper.cos(var2 * (float) Math.PI) * newBob), 0F);
+            GL11.glRotatef(MathHelper.sin(var2 * (float) Math.PI) * newBob * 3F, 0F, 0F, 1F);
+            GL11.glRotatef(Math.abs(MathHelper.cos(var2 * (float) Math.PI + 0.2F) * newBob) * 5F, 1F,
                     0F, 0F);
         }
-        GL11.glRotatef(var5, 1F, 0F, 0F);
+        GL11.glRotatef(newTilt, 1F, 0F, 0F);
     }
 
     private FloatBuffer createBuffer(float var1, float var2, float var3, float var4) {
@@ -84,21 +89,22 @@ public final class Renderer {
         return new Vec3D(newX, newY, newZ);
     }
 
-    public void hurtEffect(float var1) {
-        Player var3;
-        float var2 = (var3 = minecraft.player).hurtTime - var1;
-        if (var3.health <= 0) {
-            var1 += var3.deathTime;
-            GL11.glRotatef(40F - 8000F / (var1 + 200F), 0F, 0F, 1F);
+    // SURVIVAL: hurt effect
+    public void hurtEffect(float delta) {
+        Player player = minecraft.player;
+        float var2 = player.hurtTime - delta;
+        if (player.health <= 0) {
+            delta += player.deathTime;
+            GL11.glRotatef(40F - 8000F / (delta + 200F), 0F, 0F, 1F);
         }
 
         if (var2 >= 0F) {
-            var2 = MathHelper.sin((var2 /= var3.hurtDuration) * var2 * var2 * var2
-                    * (float) Math.PI);
-            var1 = var3.hurtDir;
-            GL11.glRotatef(-var3.hurtDir, 0F, 1F, 0F);
+            var2 /= player.hurtDuration;
+            var2 = MathHelper.sin(var2 * var2 * var2 * var2 * (float) Math.PI);
+            delta = player.hurtDir;
+            GL11.glRotatef(-player.hurtDir, 0F, 1F, 0F);
             GL11.glRotatef(-var2 * 14F, 0F, 0F, 1F);
-            GL11.glRotatef(var1, 0F, 1F, 0F);
+            GL11.glRotatef(delta, 0F, 1F, 0F);
         }
     }
 
@@ -124,6 +130,7 @@ public final class Renderer {
         }
     }
 
+    // Sets fog parameters. Note: does NOT enable GL_FOG
     public void updateFog() {
         Player player = minecraft.player;
         GL11.glFog(GL11.GL_FOG_COLOR, createBuffer(fogRed, fogBlue, fogGreen, 1F));
@@ -132,26 +139,25 @@ public final class Renderer {
         Block headBlock = Block.blocks[minecraft.level.getTile((int) player.x, (int) (player.y + 0.12F), (int) player.z)];
         if (headBlock != null && headBlock.getLiquidType() != LiquidType.notLiquid) {
             // Colored fog when inside water/lava
-            LiquidType var6 = headBlock.getLiquidType();
+            LiquidType liquidType = headBlock.getLiquidType();
             GL11.glFogi(GL11.GL_FOG_MODE, GL11.GL_EXP);
-            float red, green, blue;
-            if (var6 == LiquidType.water) {
-                GL11.glFogf(GL11.GL_FOG_DENSITY, 0.1F);
-                red = 0.4F;
-                green = 0.4F;
-                blue = 0.9F;
+            if (liquidType == LiquidType.water) {
+                GL11.glFogf(GL11.GL_FOG_DENSITY, WATER_FOG_DENSITY);
+                float red = 0.4F;
+                float green = 0.4F;
+                float blue = 0.9F;
                 GL11.glLightModel(GL11.GL_LIGHT_MODEL_AMBIENT, createBuffer(red, green, blue, 1F));
-            } else if (var6 == LiquidType.lava) {
-                GL11.glFogf(GL11.GL_FOG_DENSITY, 2F);
-                red = 0.4F;
-                green = 0.3F;
-                blue = 0.3F;
+            } else if (liquidType == LiquidType.lava) {
+                GL11.glFogf(GL11.GL_FOG_DENSITY, LAVA_FOG_DENSITY);
+                float red = 0.4F;
+                float green = 0.3F;
+                float blue = 0.3F;
                 GL11.glLightModel(GL11.GL_LIGHT_MODEL_AMBIENT, createBuffer(red, green, blue, 1F));
             }
         } else {
             // Regular fog, when not in liquid
             GL11.glFogi(GL11.GL_FOG_MODE, GL11.GL_LINEAR);
-            GL11.glFogf(GL11.GL_FOG_START, 0F);
+            GL11.glFogf(GL11.GL_FOG_START, fogEnd / 2);
             GL11.glFogf(GL11.GL_FOG_END, fogEnd);
             GL11.glLightModel(GL11.GL_LIGHT_MODEL_AMBIENT, createBuffer(1F, 1F, 1F, 1F));
         }
@@ -166,19 +172,19 @@ public final class Renderer {
         applyBobbing(delta, settings.viewBobbing);
 
         float cameraDistance = -5.1F;
-        if (selected != null && settings.thirdPersonMode == 2) {
+        if (selected != null && settings.thirdPersonMode == ThirdPersonMode.FRONT_FACING) {
             cameraDistance = -(selected.vec.distance(getPlayerVector(delta)) - 0.51F);
             if (cameraDistance < -5.1F) {
                 cameraDistance = -5.1F;
             }
         }
 
-        if (settings.thirdPersonMode == 0) {
+        if (settings.thirdPersonMode == ThirdPersonMode.NONE) {
             GL11.glTranslatef(0F, 0F, -0.1F);
         } else {
             GL11.glTranslatef(0F, 0F, cameraDistance);
         }
-        if (settings.thirdPersonMode == 2) {
+        if (settings.thirdPersonMode == ThirdPersonMode.FRONT_FACING) {
             GL11.glRotatef(-player.xRotO + (player.xRot - player.xRotO) * delta, 1F, 0F, 0F);
             GL11.glRotatef(player.yRotO + (player.yRot - player.yRotO) * delta + 180, 0F, 1F, 0F);
         } else {
@@ -256,7 +262,7 @@ public final class Renderer {
         GL11.glEnable(GL11.GL_CULL_FACE);
         GL11.glDisable(GL11.GL_BLEND);
     }
-    
+
     public void drawWireframeBox(AABB aabb) {
         GL11.glEnable(GL11.GL_BLEND);
         GL11.glBlendFunc(GL11.GL_SRC_ALPHA, GL11.GL_ONE_MINUS_SRC_ALPHA);
@@ -264,7 +270,7 @@ public final class Renderer {
         GL11.glLineWidth(2F);
         GL11.glDisable(GL11.GL_TEXTURE_2D);
         GL11.glDepthMask(false);
-        
+
         GL11.glBegin(GL11.GL_LINE_STRIP);
         GL11.glVertex3f(aabb.maxX, aabb.maxY, aabb.maxZ);
         GL11.glVertex3f(aabb.minX, aabb.maxY, aabb.maxZ);
@@ -289,14 +295,13 @@ public final class Renderer {
         GL11.glVertex3f(aabb.maxX, aabb.maxY, aabb.minZ);
         GL11.glVertex3f(aabb.maxX, aabb.minY, aabb.minZ);
         GL11.glEnd();
-        
+
         GL11.glDepthMask(true);
         GL11.glEnable(GL11.GL_TEXTURE_2D);
         GL11.glDisable(GL11.GL_BLEND);
         GL11.glEnable(GL11.GL_ALPHA_TEST);
     }
-    
-    
+
     public void drawSelectionCuboid(SelectionBoxData box, ShapeRenderer shapeRenderer) {
         CustomAABB bounds = box.bounds;
         ColorCache color = box.color;

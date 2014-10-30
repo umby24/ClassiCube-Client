@@ -391,21 +391,24 @@ public abstract class Entity implements Serializable {
 
     }
 
-    public void moveRelative(float x, float y, float z) {
-
-        float var4;
-        if ((var4 = MathHelper.sqrt(x * x + y * y)) >= 0.01F) {
-            if (var4 < 1F) {
-                var4 = 1F;
+    // Moves horizontally in the direction specified by vector [dX,dZ]
+    // relative to current rotation, by [distance] units.
+    // Length of vector [dX,dZ] must be at least 0.01 to have effect.
+    public void moveRelative(float dX, float dZ, float distance) {
+        float vecLength = MathHelper.sqrt(dX * dX + dZ * dZ);
+        if (vecLength >= 0.01F) {
+            if (vecLength < 1F) {
+                vecLength = 1F;
             }
 
-            var4 = z / var4;
-            x *= var4;
-            y *= var4;
-            z = MathHelper.sin(yRot * (float) Math.PI / 180F);
-            var4 = MathHelper.cos(yRot * (float) Math.PI / 180F);
-            xd += x * var4 - y * z;
-            zd += y * var4 + x * z;
+            float normalizeAndScale = distance / vecLength;
+            dX *= normalizeAndScale;
+            dZ *= normalizeAndScale;
+            float rotRadians = yRot * (float) Math.PI / 180F;
+            float sin = MathHelper.sin(rotRadians);
+            float cos = MathHelper.cos(rotRadians);
+            xd += dX * cos - dZ * sin;
+            zd += dZ * cos + dX * sin;
         }
     }
 
@@ -463,8 +466,7 @@ public abstract class Entity implements Serializable {
         removed = true;
     }
 
-    // TODO var2
-    public void render(TextureManager textureManager, float var2) {
+    public void render(TextureManager textureManager, float delta) {
     }
 
     public void renderHover(TextureManager textureManager) {
@@ -478,7 +480,7 @@ public abstract class Entity implements Serializable {
             for (double zSpawn = level.zSpawn + 0.5F; ySpawn > 0F; ++ySpawn) {
                 this.setPos(xSpawn, ySpawn, (float) zSpawn);
                 if (level.isInBounds((int) xSpawn, (int) ySpawn, (int) zSpawn)) {
-                    if (level.getCubes(boundingBox).size() == 0) {
+                    if (level.getCubes(boundingBox).isEmpty()) {
                         break;
                     }
                 } else {
