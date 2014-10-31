@@ -36,7 +36,7 @@ import java.util.Set;
 
 // This class is responsible for responding to individual packets coming from the client.
 // It also handles CPE Negotiation process.
-public class PacketHandler {
+public final class PacketHandler {
 
     private final Set<ProtocolExtension> enabledExtensions = new HashSet<>();
 
@@ -45,8 +45,8 @@ public class PacketHandler {
 
     private final Minecraft minecraft;
 
-    public boolean isLoadingLevel = false;
-    
+    public boolean isLoadingLevel;
+
     // This object is used to store the level object while it's being loaded.
     // Packets that modify can modify the level before it loaded (like ENV_SET_COLOR)
     // should modify this object instead of "minecraft.level" while isLoadingLevel is true.
@@ -54,6 +54,7 @@ public class PacketHandler {
 
     public PacketHandler(Minecraft minecraft) {
         this.minecraft = minecraft;
+        setLoadingLevel(true);
     }
 
     public void setLoadingLevel(boolean value) {
@@ -300,7 +301,7 @@ public class PacketHandler {
             }
 
         } else if (packetType == PacketType.DISCONNECT) {
-            isLoadingLevel = false; // Reset this, in case we get kicked while changing levels.
+            setLoadingLevel(false); // Reset this, in case we get kicked while changing levels.
             networkManager.close();
             minecraft.setCurrentScreen(new ErrorScreen("Connection lost", (String) packetParams[0]));
 
@@ -442,7 +443,9 @@ public class PacketHandler {
                     } else {
                         level.customShadowColor = new ColorCache(r / 255F, g / 255F, b / 255F);
                     }
-                    if(!isLoadingLevel) minecraft.levelRenderer.refresh();
+                    if (!isLoadingLevel) {
+                        minecraft.levelRenderer.refresh();
+                    }
                     break;
                 case 4: // diffuse color
                     if (doReset) {
@@ -450,7 +453,9 @@ public class PacketHandler {
                     } else {
                         level.customLightColor = new ColorCache(r / 255F, g / 255F, b / 255F);
                     }
-                    if(!isLoadingLevel) minecraft.levelRenderer.refresh();
+                    if (!isLoadingLevel) {
+                        minecraft.levelRenderer.refresh();
+                    }
                     break;
             }
 
@@ -462,49 +467,66 @@ public class PacketHandler {
             byte sideBlock = (byte) packetParams[1];
             byte edgeBlock = (byte) packetParams[2];
             short sideLevel = (short) packetParams[3];
+            //LogUtil.logInfo("ENV_SET_MAP_APPEARANCE(" + textureUrl + "," + sideBlock + "," + edgeBlock + "," + sideLevel + ")");
 
-            if (minecraft.settings.canServerChangeTextures) {
-                if (sideBlock == -1) {
-                    minecraft.textureManager.customSideBlock = null;
-                } else if (sideBlock < Block.blocks.length) {
-                    int ID = Block.blocks[sideBlock].textureId;
-                    minecraft.textureManager.customSideBlock = minecraft.textureManager.textureAtlas.get(ID);
-                }
-                if (edgeBlock == -1) {
-                    minecraft.textureManager.customEdgeBlock = null;
-                } else if (edgeBlock < Block.blocks.length) {
-                    Block block = Block.blocks[edgeBlock];
-                    int ID = block.getTextureId(TextureSide.Top);
-                    minecraft.textureManager.customEdgeBlock = minecraft.textureManager.textureAtlas.get(ID);
-                }
-                if (textureUrl.length() > 0) {
-                    File path = new File(Minecraft.getMinecraftDirectory(), "/skins/terrain");
-                    if (!path.exists()) {
-                        path.mkdirs();
-                    }
-                    String hash = minecraft.getHash(textureUrl);
-                    if (hash != null) {
-                        File file = new File(path, hash + ".png");
-                        BufferedImage image;
-                        if (!file.exists()) {
-                            minecraft.downloadImage(new URL(textureUrl), file);
-                        }
-                        image = ImageIO.read(file);
-                        if (image.getWidth() % 16 == 0 && image.getHeight() % 16 == 0) {
-                            minecraft.textureManager.animations.clear();
-                            minecraft.textureManager.currentTerrainPng = image;
-                        }
-                    }
-                } else {
-                    try {
-                        minecraft.textureManager.currentTerrainPng = ImageIO.read(
-                                TextureManager.class.getResourceAsStream("/terrain.png"));
-                    } catch (IOException ex2) {
-                        LogUtil.logError("Error reading default terrain texture.", ex2);
-                    }
-                }
+            if (minecraft.level != null) {
+                // Change waterLevel after level loading
                 minecraft.level.waterLevel = sideLevel;
-                minecraft.levelRenderer.refresh();
+            } else {
+                // Change waterLevel during level loading
+                newLevel.waterLevel = sideLevel;
+            }
+
+            if (sideBlock > 0 && sideBlock < Block.blocks.length) {
+                int ID = Block.blocks[sideBlock].textureId;
+                minecraft.textureManager.customSideBlock = minecraft.textureManager.textureAtlas.get(ID);
+            } else {
+                minecraft.textureManager.customSideBlock = null;
+            }
+            if (edgeBlock > 0 && edgeBlock < Block.blocks.length) {
+                Block block = Block.blocks[edgeBlock];
+                int ID = block.getTextureId(TextureSide.Top);
+                minecraft.textureManager.customEdgeBlock = minecraft.textureManager.textureAtlas.get(ID);
+            } else {
+                minecraft.textureManager.customEdgeBlock = null;
+            }
+
+            minecraft.textureManager.forceTextureReload("customEdge");
+            minecraft.textureManager.forceTextureReload("customSide");
+
+            if (minecraft.level != null) {
+                minecraft.levelRenderer.refreshEnvironment();
+            }
+
+            if (!minecraft.settings.canServerChangeTextures) {
+                LogUtil.logInfo("Denied server's request to change the texture pack.");
+            } else if (textureUrl.length() > 0) {
+                File textureDir = new File(Minecraft.getMinecraftDirectory(), "/skins/terrain");
+                if (!textureDir.exists()) {
+                    textureDir.mkdirs();
+                }
+                String hash = minecraft.getHash(textureUrl);
+                if (hash != null) {
+                    File file = new File(textureDir, hash + ".png");
+                    BufferedImage image;
+                    if (!file.exists()) {
+                        LogUtil.logInfo("Downloading texture pack " + hash + " from " + textureUrl);
+                        minecraft.downloadImage(new URL(textureUrl), file);
+                    }
+                    image = ImageIO.read(file);
+                    if (image.getWidth() % 16 == 0 && image.getHeight() % 16 == 0) {
+                        minecraft.textureManager.animations.clear();
+                        minecraft.textureManager.currentTerrainPng = image;
+                    }
+                }
+            } else {
+                // Reset texture to default
+                try {
+                    minecraft.textureManager.currentTerrainPng = ImageIO.read(
+                            TextureManager.class.getResourceAsStream("/terrain.png"));
+                } catch (IOException ex2) {
+                    LogUtil.logError("Error reading default terrain texture.", ex2);
+                }
             }
 
         } else if (packetType == PacketType.CLICK_DISTANCE) {
@@ -632,17 +654,17 @@ public class PacketHandler {
             } else {
                 if (allowPlacement == 0) {
                     if (minecraft.disallowedPlacementBlocks.add(block)) {
-                        LogUtil.logInfo("DisallowingPlacement block: " + block);
+                        LogUtil.logInfo("Disallowing placement of block: " + blockType);
                     }
                 } else if (minecraft.disallowedPlacementBlocks.remove(block)) {
-                    LogUtil.logInfo("AllowingPlacement block: " + block);
+                    LogUtil.logInfo("Allowing placement of block: " + blockType);
                 }
                 if (allowDeletion == 0) {
                     if (minecraft.disallowedBreakingBlocks.add(block)) {
-                        LogUtil.logInfo("DisallowingDeletion block: " + block);
+                        LogUtil.logInfo("Disallowing deletion of block: " + blockType);
                     }
                 } else if (minecraft.disallowedBreakingBlocks.remove(block)) {
-                    LogUtil.logInfo("AllowingDeletion block: " + block);
+                    LogUtil.logInfo("Allowing deletion of block: " + blockType);
                 }
             }
 

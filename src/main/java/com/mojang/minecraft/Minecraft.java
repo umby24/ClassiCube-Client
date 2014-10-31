@@ -89,6 +89,7 @@ import com.mojang.minecraft.render.Renderer;
 import com.mojang.minecraft.render.ShapeRenderer;
 import com.mojang.minecraft.render.TextureManager;
 import com.mojang.minecraft.render.texture.TextureFX;
+import com.mojang.minecraft.render.texture.Textures;
 import com.mojang.minecraft.sound.SoundManager;
 import com.mojang.minecraft.sound.SoundPlayer;
 import com.mojang.util.ColorCache;
@@ -734,7 +735,7 @@ public final class Minecraft implements Runnable {
             }
         }
 
-        fontRenderer = new FontRenderer(settings, "/default.png", textureManager);
+        fontRenderer = new FontRenderer(settings, Textures.FONT, textureManager);
         monitoringThread = new MonitoringThread(1000); // 1s refresh
         textureManager.initAtlas();
 
@@ -1206,9 +1207,9 @@ public final class Minecraft implements Runnable {
                             if (!particleManager.particles[pass].isEmpty()) {
                                 int textureId = 0;
                                 if (pass == 0) {
-                                    textureId = particleManager.textureManager.load("/particles.png");
+                                    textureId = particleManager.textureManager.load(Textures.PARTICLES);
                                 } else if (pass == 1) {
-                                    textureId = particleManager.textureManager.load("/terrain.png");
+                                    textureId = particleManager.textureManager.load(Textures.TERRAIN);
                                 }
 
                                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
@@ -1224,7 +1225,7 @@ public final class Minecraft implements Runnable {
                             }
                         }
 
-                        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/rock.png"));
+                        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load(Textures.MAP_SIDE));
                         GL11.glEnable(GL11.GL_TEXTURE_2D);
                         levelRenderer.renderBedrock();
                         renderer.updateFog();
@@ -1246,7 +1247,7 @@ public final class Minecraft implements Runnable {
                             // SURVIVAL: draw cracks on sides of the block being broken
                             if (levelRenderer.cracks > 0F) {
                                 GL11.glBlendFunc(GL11.GL_DST_COLOR, GL11.GL_SRC_COLOR);
-                                GL11.glBindTexture(GL11.GL_TEXTURE_2D, levelRenderer.textureManager.load("/terrain.png"));
+                                GL11.glBindTexture(GL11.GL_TEXTURE_2D, levelRenderer.textureManager.load(Textures.TERRAIN));
                                 GL11.glColor4f(1F, 1F, 1F, 0.5F);
                                 GL11.glPushMatrix();
 
@@ -1295,7 +1296,7 @@ public final class Minecraft implements Runnable {
                         renderer.updateFog();
                         GL11.glEnable(GL11.GL_TEXTURE_2D);
                         GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-                                levelRenderer.textureManager.load("/water.png"));
+                                levelRenderer.textureManager.load(Textures.MAP_EDGE));
                         levelRenderer.renderOutsideWater();
                         GL11.glColorMask(false, false, false, false);
 
@@ -1304,7 +1305,7 @@ public final class Minecraft implements Runnable {
 
                         if (chunksRemaining > 0) {
                             GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-                                    levelRenderer.textureManager.load("/terrain.png"));
+                                    levelRenderer.textureManager.load(Textures.TERRAIN));
                             GL11.glCallLists(levelRenderer.buffer);
                         }
 
@@ -1406,7 +1407,7 @@ public final class Minecraft implements Runnable {
                             GL11.glTranslatef(-0.5F, -0.5F, -0.5F);
                             if (settings.thirdPersonMode == ThirdPersonMode.NONE && canRenderGUI) {
                                 GL11.glBindTexture(GL11.GL_TEXTURE_2D,
-                                        heldBlock.minecraft.textureManager.load("/terrain.png"));
+                                        heldBlock.minecraft.textureManager.load(Textures.TERRAIN));
                                 heldBlock.block.renderPreview(shapeRenderer);
                             }
                         } else {
@@ -1455,13 +1456,11 @@ public final class Minecraft implements Runnable {
                     if (vsync) {
                         Display.setVSyncEnabled(false);
                         vsync = false;
-                        LogUtil.logInfo("VSYNC OFF");
                     }
                 } else {
                     if (!vsync) {
                         Display.setVSyncEnabled(true);
                         vsync = true;
-                        LogUtil.logInfo("VSYNC ON");
                     }
                 }
             }
@@ -1702,7 +1701,7 @@ public final class Minecraft implements Runnable {
             }
         }
 
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load("/terrain.png"));
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load(Textures.TERRAIN));
         TextureManager texManager = textureManager;
 
         for (int i = 0; i < texManager.animations.size(); ++i) {
@@ -1727,7 +1726,6 @@ public final class Minecraft implements Runnable {
             } else {
                 progressBar.setTitle("Connecting..");
                 progressBar.setProgress(0);
-                packetHandler.setLoadingLevel(true);
             }
         }
 
@@ -1810,52 +1808,50 @@ public final class Minecraft implements Runnable {
     }
 
     private void doNetworking() {
-        if (networkManager.isConnected()) {
-            // Do network communication
-            try {
-                do {
-                    networkManager.channel.read(networkManager.in);
-                    for (int packetsReceived = 0;
-                            packetsReceived < NetworkManager.MAX_PACKETS_PER_TICK
-                            && networkManager.in.position() > 0;
-                            packetsReceived++) {
-                        if (!packetHandler.handlePacket(networkManager)) {
-                            break;
-                        }
+        // Do network communication
+        try {
+            do {
+                networkManager.channel.read(networkManager.in);
+                for (int packetsReceived = 0;
+                        packetsReceived < NetworkManager.MAX_PACKETS_PER_TICK
+                        && networkManager.in.position() > 0;
+                        packetsReceived++) {
+                    if (!packetHandler.handlePacket(networkManager)) {
+                        break;
                     }
-                    networkManager.writeOut();
+                }
+                networkManager.writeOut();
 
-                    if (packetHandler.isLoadingLevel) {
-                        // Ignore all keyboard input while loading map, unless Esc is pressed.
-                        while (Keyboard.next()) {
-                            if (Keyboard.getEventKeyState()) {
-                                if (Keyboard.getEventKey() == Keyboard.KEY_ESCAPE) {
-                                    pause();
-                                }
+                if (packetHandler.isLoadingLevel) {
+                    // Ignore all keyboard input while loading map, unless Esc is pressed.
+                    while (Keyboard.next()) {
+                        if (Keyboard.getEventKeyState()) {
+                            if (Keyboard.getEventKey() == Keyboard.KEY_ESCAPE) {
+                                pause();
                             }
                         }
                     }
-                } while (packetHandler.isLoadingLevel);
+                }
+            } while (packetHandler.isLoadingLevel);
 
-                // Send player position to the server -- level should be loaded by now.
-                int playerXUnits = (int) (player.x * 32F);
-                int playerYUnits = (int) (player.y * 32F);
-                int playerZUnits = (int) (player.z * 32F);
-                int playerYRotation = (int) (player.yRot * 256F / 360F) & 255;
-                int playerXRotation = (int) (player.xRot * 256F / 360F) & 255;
-                networkManager.send(
-                        PacketType.POSITION_ROTATION,
-                        packetHandler.isExtEnabled(ProtocolExtension.HELD_BLOCK) ? player.inventory.getSelected() : -1,
-                        playerXUnits, playerYUnits, playerZUnits,
-                        playerYRotation, playerXRotation);
-            } catch (Exception ex) {
-                LogUtil.logWarning("Error in network handling code.", ex);
-                setCurrentScreen(new ErrorScreen("Disconnected!",
-                        "You\'ve lost connection to the server"));
-                isConnecting = false;
-                networkManager.close();
-                networkManager = null;
-            }
+            // Send player position to the server -- level should be loaded by now.
+            int playerXUnits = (int) (player.x * 32F);
+            int playerYUnits = (int) (player.y * 32F);
+            int playerZUnits = (int) (player.z * 32F);
+            int playerYRotation = (int) (player.yRot * 256F / 360F) & 255;
+            int playerXRotation = (int) (player.xRot * 256F / 360F) & 255;
+            networkManager.send(
+                    PacketType.POSITION_ROTATION,
+                    packetHandler.isExtEnabled(ProtocolExtension.HELD_BLOCK) ? player.inventory.getSelected() : -1,
+                    playerXUnits, playerYUnits, playerZUnits,
+                    playerYRotation, playerXRotation);
+        } catch (Exception ex) {
+            LogUtil.logWarning("Error in network handling code.", ex);
+            setCurrentScreen(new ErrorScreen("Disconnected!",
+                    "You\'ve lost connection to the server"));
+            isConnecting = false;
+            networkManager.close();
+            networkManager = null;
         }
     }
 
@@ -1999,9 +1995,7 @@ public final class Minecraft implements Runnable {
                                 break;
 
                             case Keyboard.KEY_F6:
-                                if (HackState.noclip) {
-                                    settings.thirdPersonMode = settings.thirdPersonMode.next();
-                                }
+                                settings.thirdPersonMode = settings.thirdPersonMode.next();
                                 break;
 
                             case Keyboard.KEY_F11:
