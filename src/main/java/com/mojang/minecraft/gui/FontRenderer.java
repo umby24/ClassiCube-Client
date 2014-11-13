@@ -10,55 +10,86 @@ import org.lwjgl.opengl.GL11;
 import com.mojang.minecraft.GameSettings;
 import com.mojang.minecraft.render.ShapeRenderer;
 import com.mojang.minecraft.render.TextureManager;
+import com.mojang.minecraft.render.texture.Textures;
 
 public final class FontRenderer {
 
-    public int charHeight;
-    public int charWidth;
+    public int textureHeight;
+    public int textureWidth;
+    public int[] charOffsets = new int[256];
     public int[] charWidths = new int[256];
-    private int fontTextureId = 0;
-    private GameSettings settings;
+    private final int fontTextureId;
+    private final GameSettings settings;
 
-    public FontRenderer(GameSettings settings, String fontImage, TextureManager textures)
+    public FontRenderer(GameSettings settings, TextureManager textures)
             throws IOException {
         this.settings = settings;
         BufferedImage fontTexture;
 
-        try {
-            fontTexture = ImageIO.read(TextureManager.class.getResourceAsStream(fontImage));
-        } catch (IOException e) {
-            throw new IOException("Missing resource");
+        if (textures.customFont != null) {
+            fontTexture = textures.customFont;
+        } else {
+            fontTexture = ImageIO.read(TextureManager.class.getResourceAsStream(Textures.FONT));
         }
         int width = fontTexture.getWidth();
         int height = fontTexture.getHeight();
-        charWidth = width;
-        charHeight = height;
-        int[] fontData = new int[256 * 256];
+        textureWidth = width;
+        textureHeight = height;
+
+        calculateCharWidths(fontTexture, width, height);
+        fontTextureId = textures.load(Textures.FONT);
+    }
+
+    // Calculates width and offset of every character, to space characters correctly.
+    private void calculateCharWidths(BufferedImage fontTexture, int width, int height) {
+        int[] fontData = new int[width * height];
         fontTexture.getRGB(0, 0, width, height, fontData, 0, width);
+        int maxCharWidth = width / 16;
+        int maxCharHeight = height / 16;
 
-        for (int character = 0; character < 256; ++character) {
-            int var6 = character % 16;
-            int var7 = character / 16;
-            float chWidth = 0;
-
-            for (boolean var9 = false; chWidth < 8 && !var9; chWidth++) {
-                int var10 = (var6 << 3) + (int) chWidth;
-                var9 = true;
-
-                for (int var11 = 0; var11 < 8 && var9; ++var11) {
-                    int var12 = ((var7 << 3) + var11) * width;
-                    if ((fontData[var10 + var12] & 255) > 128) {
-                        var9 = false;
-                    }
-                }
-            }
+        for (int character = 0; character < 128; ++character) {
+            int col = character % 16;
+            int row = character / 16;
+            int offset = (col * maxCharWidth) + (row * maxCharHeight * width);
 
             if (character == 32) {
-                chWidth = 4 * this.settings.scale;
+                // Space is always 50% width
+                charWidths[32] = maxCharWidth / 3;
+            } else {
+                // Other chars' width is determined by examining pixels
+                // First, find start of character (first non-empty row)
+                int chStart = 0;
+                for (int c = 0; c < maxCharWidth; c++) {
+                    chStart = c;
+                    if (!isColEmpty(fontData, offset + c, width, maxCharHeight)) {
+                        break;
+                    }
+                }
+                // Next, find end of character (last non-empty row)
+                int chEnd = maxCharWidth - 1;
+                for (int c = maxCharWidth - 1; c > chStart; c--) {
+                    chEnd = c;
+                    if (!isColEmpty(fontData, offset + c, width, maxCharHeight)) {
+                        break;
+                    }
+                }
+
+                charOffsets[character] = chStart;
+                charWidths[character] = chEnd - chStart + 1;
             }
-            this.charWidths[character] = (int) chWidth;
         }
-        fontTextureId = textures.load(fontImage);
+    }
+
+    private static boolean isColEmpty(int[] imgData, int offset, int imageWidth, int maxCharHeight) {
+        // Checks if a column of pixels contains any non-transparent pixels
+        for (int row = 0; row < maxCharHeight; row++) {
+            int rowOffset = offset + row * imageWidth;
+            if (((imgData[rowOffset] >> 24) & 0xFF) > 128) {
+                // Non-transparent pixel found in column!
+                return false;
+            }
+        }
+        return true;
     }
 
     public static String stripColor(String message) {
@@ -80,28 +111,25 @@ public final class FontRenderer {
         return output.toString();
     }
 
-    public float getScale() {
-        return 7F / charHeight * settings.scale;
-    }
-
     public int getWidth(String text) {
         if (text == null) {
             return 0;
         }
-        int i = 0;
+        float charWidthScale = 128f / textureWidth;
+        float width = 0;
         for (int j = 0; j < text.length(); j++) {
             int k = text.charAt(j);
-            if (k == 38) {
+            if (k == '&') {
                 j++;
             } else {
-                i += charWidths[k];
+                width += charWidths[k] * charWidthScale + 1;
             }
         }
-        return (int) Math.floor(i * settings.scale);
+        return (int) Math.ceil(width * settings.scale);
     }
 
     public int getHeight() {
-        return (int) Math.floor(charHeight * settings.scale);
+        return (int) Math.ceil(textureHeight * settings.scale);
     }
 
     private void render(String text, float x, float y, int color, boolean shadow) {
@@ -111,15 +139,17 @@ public final class FontRenderer {
         if (shadow) {
             color = (color & 16579836) >> 2;
         }
-        float f1 = settings.scale;
-        float f2 = 1F / f1;
-        x = x * f2;
-        y = y * f2;
+        x /= settings.scale;
+        y /= settings.scale;
+        y += 7.99F * (1 - settings.scale) / 2;
+
+        float charWidthScale = 128f / textureWidth;
+
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, fontTextureId);
 
         ShapeRenderer.instance.begin();
         ShapeRenderer.instance.color(color);
-        int offset = 0;
+        float xOffset = 0;
         for (int i = 0; i < text.length(); ++i) {
             char ch = text.charAt(i);
             if (ch == '&' && text.length() > i + 1) {
@@ -146,24 +176,24 @@ public final class FontRenderer {
                 i += 2;
                 ch = text.charAt(i);
             }
-            color = ch % 16 << 3;
-            int var9 = ch / 16 << 3;
-            float var13 = 7.99F;
+            int colOffset = ch % 16 << 3;
+            int rowOffset = ch / 16 << 3;
+            float charQuadSize = 7.99F;
 
-            ShapeRenderer.instance.vertexUV(x + offset, y + var13, 0F, color / 128F,
-                    (var9 + var13) / 128F);
-            ShapeRenderer.instance.vertexUV(x + offset + var13, y + var13, 0F,
-                    (color + var13) / 128F, (var9 + var13) / 128F);
-            ShapeRenderer.instance.vertexUV(x + offset + var13, y, 0F, (color + var13) / 128F,
-                    var9 / 128F);
-            ShapeRenderer.instance.vertexUV(x + offset, y, 0F, color / 128F, var9 / 128F);
+            xOffset -= charOffsets[ch] * charWidthScale;
 
-            if (ch < charWidths.length) {
-                offset += charWidths[ch];
-            }
+            ShapeRenderer.instance.vertexUV(x + xOffset, y + charQuadSize, 0F,
+                    colOffset / 128F, (rowOffset + charQuadSize) / 128F);
+            ShapeRenderer.instance.vertexUV(x + xOffset + charQuadSize, y + charQuadSize, 0F,
+                    (colOffset + charQuadSize) / 128F, (rowOffset + charQuadSize) / 128F);
+            ShapeRenderer.instance.vertexUV(x + xOffset + charQuadSize, y, 0F,
+                    (colOffset + charQuadSize) / 128F, rowOffset / 128F);
+            ShapeRenderer.instance.vertexUV(x + xOffset, y, 0F, colOffset / 128F, rowOffset / 128F);
+
+            xOffset += (charWidths[ch] + charOffsets[ch]) * charWidthScale + 1;
         }
         GL11.glPushMatrix();
-        GL11.glScalef(f1, f1, 1F);
+        GL11.glScalef(settings.scale, settings.scale, 1F);
         ShapeRenderer.instance.end();
         GL11.glPopMatrix();
     }

@@ -2,12 +2,15 @@ package com.mojang.minecraft.render;
 
 import com.mojang.minecraft.GameSettings;
 import com.mojang.minecraft.Minecraft;
+import com.mojang.minecraft.gui.FontRenderer;
 import com.mojang.minecraft.level.tile.Block;
+import com.mojang.minecraft.level.tile.TextureSide;
 import com.mojang.minecraft.net.NetworkPlayer;
 import com.mojang.minecraft.render.texture.TextureFX;
 import com.mojang.minecraft.render.texture.TextureFireFX;
 import com.mojang.minecraft.render.texture.TextureLavaFX;
 import com.mojang.minecraft.render.texture.TextureWaterFX;
+import com.mojang.minecraft.render.texture.Textures;
 import com.mojang.util.LogUtil;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
@@ -20,6 +23,7 @@ import java.nio.IntBuffer;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map.Entry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipEntry;
 import javax.imageio.ImageIO;
@@ -35,17 +39,27 @@ import org.lwjgl.opengl.GLContext;
 
 public class TextureManager {
 
-    public boolean Applet;
+    public boolean applet;
     private final HashMap<String, Integer> textures = new HashMap<>();
     public HashMap<Integer, BufferedImage> textureImages = new HashMap<>();
     public IntBuffer idBuffer = BufferUtils.createIntBuffer(1);
     public ByteBuffer textureBuffer = BufferUtils.createByteBuffer(262144);
     public List<TextureFX> animations = new ArrayList<>();
     public GameSettings settings;
-    public List<BufferedImage> textureAtlas = new ArrayList<>();
-    public BufferedImage currentTerrainPng = null;
+
+    // Stores block IDs of side/edge blocks. "-1" means "use default".
+    private int sideBlockId = -1;
+    private int edgeBlockId = -1;
+
+    // If a corresponding *BlockId field is set to non-default value, these fields will
+    // store a bitmap from the texture atlas corresponding to that block's texture.
+    // These fields need to be updated (by calling setSideBlock/setEdgeBlock) when
+    // texture pack is changed.
     public BufferedImage customSideBlock = null;
     public BufferedImage customEdgeBlock = null;
+
+    public List<BufferedImage> textureAtlas = new ArrayList<>();
+    public BufferedImage currentTerrainPng = null;
     public BufferedImage customDirtPng = null;
     public BufferedImage customRainPng = null;
     public BufferedImage customGUI = null;
@@ -68,7 +82,7 @@ public class TextureManager {
     public int previousMipmapMode;
 
     public TextureManager(GameSettings settings, boolean Applet) {
-        this.Applet = Applet;
+        this.applet = Applet;
         this.settings = settings;
 
         minecraftFolder = Minecraft.mcDir;
@@ -82,9 +96,6 @@ public class TextureManager {
 
     public static BufferedImage crop(BufferedImage src, int width, int height, int x, int y)
             throws IOException {
-
-        // LogUtil.logInfo("---" + src.getWidth() + " - " + src.getHeight() +
-        // " - " + x + " - " + y);
         BufferedImage clipping = new BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB);// src.getType());
         Graphics2D area = (Graphics2D) clipping.getGraphics().create();
         area.drawImage(src, 0, 0, clipping.getWidth(), clipping.getHeight(), x, y,
@@ -213,7 +224,7 @@ public class TextureManager {
         if (currentTerrainPng != null) {
             image = currentTerrainPng;
         } else {
-            image = loadImageFast(TextureManager.class.getResourceAsStream("/terrain.png"));
+            image = loadImageFast(TextureManager.class.getResourceAsStream(Textures.TERRAIN));
         }
         textureAtlas.clear();
         textureAtlas = Atlas2dInto1d(image, 16, image.getWidth() / 16);
@@ -236,7 +247,7 @@ public class TextureManager {
         int height = image.getHeight();
 
         GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureID);
-        if (settings.smoothing > 0) {
+        if (settings.smoothing > GameSettings.SMOOTHING_OFF) {
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER,
                     GL11.GL_NEAREST_MIPMAP_LINEAR);
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
@@ -247,8 +258,7 @@ public class TextureManager {
             GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_NEAREST);
         }
 
-        // GL11.glTexEnvi(GL11.GL_TEXTURE_ENV, GL11.GL_TEXTURE_ENV_MODE,
-        // GL11.GL_MODULATE);
+        // GL11.glTexEnvi(GL11.GL_TEXTURE_ENV, GL11.GL_TEXTURE_ENV_MODE, GL11.GL_MODULATE);
         int[] pixels = new int[width * height];
         byte[] color = new byte[width * height << 2];
 
@@ -278,8 +288,8 @@ public class TextureManager {
         GL11.glTexImage2D(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, width, height, 0, GL11.GL_RGBA,
                 GL11.GL_UNSIGNED_BYTE, textureBuffer);
 
-        if (settings.smoothing > 0) {
-            if (settings.smoothing == 1) {
+        if (settings.smoothing > GameSettings.SMOOTHING_OFF) {
+            if (settings.smoothing == GameSettings.SMOOTHING_AUTO) {
                 ContextCapabilities capabilities = GLContext.getCapabilities();
                 if (capabilities.OpenGL30) {
                     if (previousMipmapMode != settings.smoothing) {
@@ -300,7 +310,7 @@ public class TextureManager {
 
                     GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL14.GL_GENERATE_MIPMAP, GL11.GL_TRUE);
                 }
-            } else if (settings.smoothing == 2) {
+            } else if (settings.smoothing == GameSettings.SMOOTHING_UNIVERSAL) {
                 if (previousMipmapMode != settings.smoothing) {
                     LogUtil.logInfo("Using custom system for mipmap generation.");
                 }
@@ -318,205 +328,148 @@ public class TextureManager {
         previousMipmapMode = settings.smoothing;
     }
 
-    public int load(String file) {
-        if (this.currentTerrainPng == null && animations.isEmpty()) {
-            registerAnimations();
+    public int load(final String file) {
+        Integer val = textures.get(file);
+        if (val != null) {
+            return (int) val;
         }
-        if (file.startsWith("/dirt") && textures.containsKey("customDirt")) {
-            return textures.get("customDirt");
-        }
+        switch (file) {
+            case Textures.CLOUDS:
+                return loadCustom(file, customClouds);
 
-        if (file.startsWith("/mob")) {
-            String mobName = file.replace("/mob/", "").replace(".png", "").trim();
-            if (textures.containsKey("custom" + mobName)) {
-                return textures.get("custom" + mobName);
-            } else if (!textures.containsKey("custom" + mobName)) {
-                if (mobName.equalsIgnoreCase("creeper") && customCreeper != null) {
-                    int id = load(customCreeper);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("zombie") && customZombie != null) {
-                    int id = load(customZombie);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("sheep") && customSheep != null) {
-                    int id = load(customSheep);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("skeleton") && customSkeleton != null) {
-                    int id = load(customSkeleton);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("spider") && customSpider != null) {
-                    int id = load(customSpider);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("printer") && customPrinter != null) {
-                    int id = load(customPrinter);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("pig") && customPig != null) {
-                    int id = load(customPig);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("chicken") && customChicken != null) {
-                    int id = load(customChicken);
-                    textures.put("custom" + mobName, id);
-                    return id;
-                } else if (mobName.equalsIgnoreCase("croc") && customCrocodile != null) {
-                    int id = load(customCrocodile);
-                    textures.put("custom" + mobName, id);
-                    return id;
+            case Textures.FONT:
+                // Note: FontRenderer needs to be re-created whenever font texture changes.
+                return loadCustom(file, customFont);
+
+            case Textures.GUI:
+                return loadCustom(file, customGUI);
+
+            case Textures.ICONS:
+                return loadCustom(file, customIcons);
+
+            case Textures.LOADING_BACKGROUND:
+                return loadCustom(file, customDirtPng);
+
+            case Textures.MAP_EDGE:
+                if (customEdgeBlock == null && currentTerrainPng != null) {
+                    // This will fill in MAP_EDGE and MAP_SIDE
+                    load(Textures.TERRAIN);
+                } else {
+                    return loadCustom(file, customEdgeBlock);
                 }
-            }
-        }
-        if (file.startsWith("/clouds") && textures.containsKey("customClouds")) {
-            return textures.get("customClouds");
-        }
-        if (file.startsWith("/clouds") && !textures.containsKey("customClouds")
-                && customClouds != null) {
-            int id = load(customClouds);
-            textures.put("customClouds", id);
-            return id;
-        }
 
-        if (file.startsWith("/snow") && textures.containsKey("customSnow")) {
-            return textures.get("customSnow");
-        }
-        if (file.startsWith("/snow") && !textures.containsKey("customSnow") && customSnow != null) {
-            int id = load(customSnow);
-            textures.put("customSnow", id);
-            return id;
-        }
+            case Textures.MAP_SIDE:
+                if (customSideBlock == null && currentTerrainPng != null) {
+                    // This will fill in MAP_EDGE and MAP_SIDE
+                    load(Textures.TERRAIN);
+                } else {
+                    return loadCustom(file, customSideBlock);
+                }
 
-        if (file.startsWith("/char") && textures.containsKey("customHumanoid")) {
-            return textures.get("customHumanoid");
-        }
-        if (file.startsWith("/char") && !textures.containsKey("customHumanoid")
-                && customHumanoid != null) {
-            int id = load(customHumanoid);
-            textures.put("customHumanoid", id);
-            return id;
-        }
+            case Textures.MOB_CHICKEN:
+                return loadCustom(file, customChicken);
 
-        if (file.startsWith("/gui/gui") && textures.containsKey("customGUI")) {
-            return textures.get("customGUI");
-        }
-        if (file.startsWith("/gui/gui") && !textures.containsKey("customGUI") && customGUI != null) {
-            int id = load(customGUI);
-            textures.put("customGUI", id);
-            return id;
-        }
+            case Textures.MOB_CREEPER:
+                return loadCustom(file, customCreeper);
 
-        if (file.startsWith("/gui/icons") && textures.containsKey("customIcons")) {
-            return textures.get("customIcons");
-        }
-        if (file.startsWith("/gui/icons") && !textures.containsKey("customIcons")
-                && customIcons != null) {
-            int id = load(customIcons);
-            textures.put("customIcons", id);
-            return id;
-        }
+            case Textures.MOB_CROC:
+                return loadCustom(file, customCrocodile);
 
-        if (file.startsWith("/default") && textures.containsKey("customFont")) {
-            return textures.get("customGUI");
-        }
-        if (file.startsWith("/default") && !textures.containsKey("customFont")
-                && customFont != null) {
-            int id = load(customFont);
-            textures.put("customFont", id);
-            return id;
-        }
+            case Textures.MOB_HUMANOID:
+                return loadCustom(file, customHumanoid);
 
-        if (file.startsWith("/rain") && textures.containsKey("customRain")) {
-            return textures.get("customRain");
-        }
-        if (file.startsWith("/rain") && !textures.containsKey("customRain")
-                && customRainPng != null) {
-            int id = load(customRainPng);
-            textures.put("customRain", id);
-            return id;
-        }
+            case Textures.MOB_PIG:
+                return loadCustom(file, customPig);
 
-        if (file.startsWith("/terrain") && textures.containsKey("customTerrain")) {
-            return textures.get("customTerrain");
-        }
-        if (file.startsWith("/terrain") && !textures.containsKey("customTerrain")
-                && currentTerrainPng != null) {
-            int id = load(currentTerrainPng);
-            textures.put("customTerrain", id);
-            if (customSideBlock == null) {
-                customSideBlock = textureAtlas.get(Block.BEDROCK.textureId);
-                textures.put("customSide", load(customSideBlock));
-            }
-            if (customEdgeBlock == null) {
-                customEdgeBlock = textureAtlas.get(Block.WATER.textureId);
-                textures.put("customEdge", load(customEdgeBlock));
-            }
-            if (customDirtPng == null) {
-                customDirtPng = textureAtlas.get(Block.DIRT.textureId);
-                textures.put("customDirt", load(customDirtPng));
-            }
-            return id;
-        }
+            case Textures.MOB_PRINTER:
+                return loadCustom(file, customPrinter);
 
-        if (file.startsWith("/dirt") && textures.containsKey("customDirt")) {
-            return textures.get("customDirt");
-        }
-        if (file.startsWith("/rock") && textures.containsKey("customSide")) {
-            return textures.get("customSide");
-        }
-        if (file.startsWith("/rock") && !textures.containsKey("customSide") && customSideBlock != null) {
-            int id = load(customSideBlock);
-            textures.put("customSide", id);
-            return id;
-        }
-        if (file.startsWith("/water") && textures.containsKey("customEdge")) {
-            return textures.get("customEdge");
-        }
-        if (file.startsWith("/water") && !textures.containsKey("customEdge")
-                && customEdgeBlock != null) {
-            int id = load(customEdgeBlock);
-            textures.put("customEdge", id);
-            return id;
-        }
+            case Textures.MOB_SHEEP:
+                return loadCustom(file, customSheep);
 
-        if (textures.get(file) != null) {
-            return textures.get(file);
-        } else {
-            try {
-                idBuffer.clear();
-                GL11.glGenTextures(idBuffer);
-                int textureID = idBuffer.get(0);
-                if (file.endsWith(".png")) {
-                    if (file.startsWith("##")) {
-                        load(load1(loadImageFast(TextureManager.class.getResourceAsStream(file
-                                .substring(2)))), textureID);
+            case Textures.MOB_SKELETON:
+                return loadCustom(file, customSkeleton);
+
+            case Textures.MOB_SPIDER:
+                return loadCustom(file, customSpider);
+
+            case Textures.MOB_ZOMBIE:
+                return loadCustom(file, customZombie);
+
+            case Textures.RAIN:
+                return loadCustom(file, customRainPng);
+
+            case Textures.SNOW:
+                return loadCustom(file, customSnow);
+
+            case Textures.TERRAIN:
+                int id = loadCustom(file, currentTerrainPng);
+                try {
+                    initAtlas();
+                    if (currentTerrainPng != null) {
+                        // Disable animations for non-standard texture packs
+                        animations.clear();
                     } else {
-                        load(loadImageFast(TextureManager.class.getResourceAsStream(file)),
-                                textureID);
+                        registerAnimations();
                     }
-
-                    textures.put(file, textureID);
-                } else if (file.endsWith(".zip")) {
-                    try (ZipFile zip = new ZipFile(
-                            new File(minecraftFolder, "texturepacks/" + file))) {
-                        String terrainPNG = "terrain.png";
-                        if (zip.getEntry(terrainPNG) != null) {
-                            try (InputStream is = zip.getInputStream(zip.getEntry(terrainPNG))) {
-                                load(loadImageFast(is), textureID);
-                            }
-                        } else {
-                            load(loadImageFast(TextureManager.class.getResourceAsStream("/"
-                                    + terrainPNG)), textureID);
-                        }
+                } catch (IOException ex) {
+                    throw new RuntimeException("Failed to load texture atlas!", ex);
+                }
+                if (currentTerrainPng != null) {
+                    // We can use non-standard "terrain.png" to fill in
+                    // missing custom "rock.png", "water.png", and "dirt.png" textures
+                    // (textures used for map sides, edges, and loading backgrounds)
+                    if (customSideBlock == null) {
+                        customSideBlock = textureAtlas.get(Block.BEDROCK.textureId);
+                        loadCustom(Textures.MAP_SIDE, customSideBlock);
+                    }
+                    if (customEdgeBlock == null) {
+                        customEdgeBlock = textureAtlas.get(Block.WATER.textureId);
+                        loadCustom(Textures.MAP_EDGE, customEdgeBlock);
+                    }
+                    if (customDirtPng == null) {
+                        customDirtPng = textureAtlas.get(Block.DIRT.textureId);
+                        loadCustom(Textures.LOADING_BACKGROUND, customDirtPng);
                     }
                 }
+                return id;
 
-                return textureID;
-            } catch (IOException ex) {
-                throw new RuntimeException("Failed to load texture", ex);
+            default:
+                return loadDefault(file);
+        }
+    }
+
+    int loadCustom(String file, BufferedImage img) {
+        int id;
+        if (img != null) {
+            id = load(img);
+        } else {
+            id = loadDefault(file);
+        }
+        textures.put(file, id);
+        return id;
+    }
+
+    int loadDefault(String file) {
+        try {
+            idBuffer.clear();
+            GL11.glGenTextures(idBuffer);
+            int textureID = idBuffer.get(0);
+            if (file.endsWith(".png")) {
+                if (file.startsWith("##")) {
+                    load(load1(loadImageFast(TextureManager.class.getResourceAsStream(file.substring(2)))), textureID);
+                } else {
+                    load(loadImageFast(TextureManager.class.getResourceAsStream(file)), textureID);
+                }
+
+                textures.put(file, textureID);
+            } else {
+                throw new RuntimeException("Cannot load texture from " + file + ": unsupported format.");
             }
+
+            return textureID;
+        } catch (IOException ex) {
+            throw new RuntimeException("Failed to load texture", ex);
         }
     }
 
@@ -534,9 +487,24 @@ public class TextureManager {
         }
     }
 
+    public void reloadTextures() throws IOException {
+        if (settings.minecraft.networkManager != null) {
+            for (NetworkPlayer p : settings.minecraft.networkManager.getPlayers()) {
+                p.forceTextureReload();
+            }
+            settings.minecraft.player.forceTextureReload();
+        }
+        settings.minecraft.fontRenderer = new FontRenderer(settings, this);
+
+        // Force to reload custom side/edge textures from the atlas, while keeping block IDs same.
+        load(Textures.TERRAIN);
+        setSideBlock(sideBlockId);
+        setEdgeBlock(edgeBlockId);
+    }
+
     public void loadTexturePack(final String file) throws IOException {
         if (file.endsWith(".zip")) {
-            resetAllMods();
+            useDefaultTextures();
             try (ZipFile zip = new ZipFile(new File(minecraftFolder, "texturepacks/" + file))) {
                 currentTerrainPng = loadImageFromZip(zip, "terrain.png");
                 customRainPng = loadImageFromZip(zip, "rain.png");
@@ -557,14 +525,7 @@ public class TextureManager {
                 customClouds = loadImageFromZip(zip, "clouds.png");
             }
         }
-        initAtlas();
-        if (settings.minecraft.networkManager != null) {
-            for (NetworkPlayer p : settings.minecraft.networkManager.getPlayers()) {
-                p.bindTexture(this);
-            }
-            settings.minecraft.player.bindTexture(this);
-        }
-        animations.clear();
+        reloadTextures();
     }
 
     public void registerAnimations() {
@@ -574,24 +535,24 @@ public class TextureManager {
         animations.add(new TextureFireFX());
     }
 
-    public void forceTextureReload() {
-        for (int id : textures.values()) {
-            GL11.glDeleteTextures(id);
-        }
-        LogUtil.logInfo("Reloaded all " + textures.size() + " textures.");
-        textures.clear();
-    }
-
-    public void forceTextureReload(String textureName) {
+    public void unloadTexture(String textureName) {
         if (textures.containsKey(textureName)) {
-            LogUtil.logInfo("Reloaded texture: " + textureName);
+            //LogUtil.logInfo("Unloaded texture: " + textureName);
             GL11.glDeleteTextures(textures.remove(textureName));
         }
     }
 
-    public void resetAllMods() {
-        forceTextureReload();
+    public void unloadTexture(int textureId) {
+        while (textures.values().remove(textureId)) {
+        }
+        GL11.glDeleteTextures(textureId);
+    }
 
+    // Resets all custom textures to their defaults.
+    // Frees all previosly-loaded textures (including the font).
+    // Does *not* affect block types for map edges/sides.
+    // Use resetSideBlock/resetEdgeBlock for that.
+    public void useDefaultTextures() {
         currentTerrainPng = null;
         customEdgeBlock = null;
         customSideBlock = null;
@@ -601,6 +562,16 @@ public class TextureManager {
         customIcons = null;
         customFont = null;
         customClouds = null;
+
+        unloadTexture(Textures.TERRAIN);
+        unloadTexture(Textures.MAP_EDGE);
+        unloadTexture(Textures.MAP_SIDE);
+        unloadTexture(Textures.LOADING_BACKGROUND);
+        unloadTexture(Textures.RAIN);
+        unloadTexture(Textures.GUI);
+        unloadTexture(Textures.ICONS);
+        unloadTexture(Textures.FONT);
+        unloadTexture(Textures.CLOUDS);
 
         customChicken = null;
         customCreeper = null;
@@ -612,5 +583,68 @@ public class TextureManager {
         customSkeleton = null;
         customSpider = null;
         customZombie = null;
+
+        unloadTexture(Textures.MOB_CHICKEN);
+        unloadTexture(Textures.MOB_CREEPER);
+        unloadTexture(Textures.MOB_CROC);
+        unloadTexture(Textures.MOB_HUMANOID);
+        unloadTexture(Textures.MOB_PIG);
+        unloadTexture(Textures.MOB_PRINTER);
+        unloadTexture(Textures.MOB_SHEEP);
+        unloadTexture(Textures.MOB_SKELETON);
+        unloadTexture(Textures.MOB_SPIDER);
+        unloadTexture(Textures.MOB_ZOMBIE);
+    }
+
+    public int getSideBlock() {
+        return sideBlockId;
+    }
+
+    public void setSideBlock(int blockId) {
+        sideBlockId = blockId;
+        if (blockId < 0 || blockId > Block.blocks.length) {
+            resetSideBlock();
+        } else {
+            int texId = Block.blocks[blockId].getTextureId(TextureSide.Top);
+            unloadTexture(Textures.MAP_SIDE);
+            customSideBlock = textureAtlas.get(texId);
+        }
+    }
+
+    public void resetSideBlock() {
+        sideBlockId = -1;
+        customSideBlock = null;
+        unloadTexture(Textures.MAP_SIDE);
+    }
+
+    public int getEdgeBlock() {
+        return edgeBlockId;
+    }
+
+    public void setEdgeBlock(int blockId) {
+        edgeBlockId = blockId;
+        if (blockId < 0 || blockId > Block.blocks.length) {
+            resetEdgeBlock();
+        } else {
+            int texId = Block.blocks[blockId].getTextureId(TextureSide.Top);
+            unloadTexture(Textures.MAP_EDGE);
+            customEdgeBlock = textureAtlas.get(texId);
+        }
+    }
+
+    public void resetEdgeBlock() {
+        edgeBlockId = -1;
+        customEdgeBlock = null;
+        unloadTexture(Textures.MAP_EDGE);
+    }
+
+    public void setTerrainTexture(BufferedImage newImage) {
+        currentTerrainPng = newImage;
+        unloadTexture(Textures.TERRAIN);
+        unloadTexture(Textures.MAP_EDGE);
+        unloadTexture(Textures.MAP_SIDE);
+        load(Textures.TERRAIN);
+        setSideBlock(sideBlockId);
+        setEdgeBlock(edgeBlockId);
     }
 }

@@ -28,7 +28,7 @@ public final class GameSettings {
             SHOWNAMES_ALWAYS = 2,
             SHOWNAMES_ALWAYS_UNSCALED = 3;
     // common framerate limits
-    public static int MAX_SUPPORTED_FRAMERATE = 60;
+    public static int MAX_SUPPORTED_FRAMERATE = 144;
     public static final int[] FRAMERATE_LIMITS = {20, 30, 40, 60, 75, 85, 120, 144};
     // thirdPersonMode values
     public static final int FIRST_PERSON = 0,
@@ -90,7 +90,7 @@ public final class GameSettings {
     public int showNames = 0;
     public String lastUsedTexturePack;
     public boolean hacksEnabled = true;
-    public int smoothing = 0;
+    public int smoothing = SMOOTHING_OFF;
     public int framerateLimit = 60;
     public boolean viewBobbing = true;
     public int viewDistance = 4; // default to "normal (128)"
@@ -374,24 +374,14 @@ public final class GameSettings {
                 if (smoothing > SMOOTHING_UNIVERSAL) {
                     smoothing = SMOOTHING_OFF;
                 }
-                minecraft.textureManager.forceTextureReload(Textures.TERRAIN);
-                minecraft.textureManager.forceTextureReload(Textures.MAP_EDGE);
-                minecraft.textureManager.forceTextureReload(Textures.MAP_SIDE);
-                minecraft.textureManager.forceTextureReload("customTerrain");
-                minecraft.textureManager.forceTextureReload("customEdge");
-                minecraft.textureManager.forceTextureReload("customSide");
+                minecraft.textureManager.unloadTexture(Textures.TERRAIN);
                 break;
             case ANISOTROPIC:
                 anisotropy++;
                 if (anisotropy > TextureManager.getMaxAnisotropySetting()) {
                     anisotropy = ANISOTROPY_OFF;
                 }
-                minecraft.textureManager.forceTextureReload(Textures.TERRAIN);
-                minecraft.textureManager.forceTextureReload(Textures.MAP_EDGE);
-                minecraft.textureManager.forceTextureReload(Textures.MAP_SIDE);
-                minecraft.textureManager.forceTextureReload("customTerrain");
-                minecraft.textureManager.forceTextureReload("customEdge");
-                minecraft.textureManager.forceTextureReload("customSide");
+                minecraft.textureManager.unloadTexture(Textures.TERRAIN);
                 break;
             case ALLOW_SERVER_TEXTURES:
                 canServerChangeTextures = !canServerChangeTextures;
@@ -427,11 +417,11 @@ public final class GameSettings {
         }
         int closest = Integer.MAX_VALUE;
         long minDifference = Integer.MAX_VALUE;
-        for (int i = 0; i < options.length; i++) {
-            long difference = Math.abs((long) options[i] - target);
+        for (int option : options) {
+            long difference = Math.abs((long) option - target);
             if (minDifference > difference) {
                 minDifference = difference;
-                closest = options[i];
+                closest = option;
             }
         }
         return closest;

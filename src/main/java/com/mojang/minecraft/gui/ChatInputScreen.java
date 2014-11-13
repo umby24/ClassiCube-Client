@@ -8,19 +8,21 @@ import java.awt.datatransfer.Transferable;
 import java.awt.datatransfer.UnsupportedFlavorException;
 import java.io.IOException;
 import java.net.URI;
-import java.util.Vector;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
 
 import com.mojang.minecraft.ChatClickData;
 import com.mojang.minecraft.ChatClickData.LinkData;
+import com.mojang.minecraft.ChatLine;
 import com.mojang.util.LogUtil;
 import com.mojang.minecraft.net.PacketType;
 
 public class ChatInputScreen extends GuiScreen {
 
-    public static Vector<String> history = new Vector<>();
+    public static List<String> history = new ArrayList<>();
     /**
      * The background color of the chat.
      */
@@ -141,8 +143,8 @@ public class ChatInputScreen extends GuiScreen {
                     minecraft.hud.addChat("  &eGUI: &a" + (minecraft.canRenderGUI ? "On" : "Off"));
                     minecraft.hud.addChat("  &eDebug: &a" + (minecraft.settings.showDebug ? "On" : "Off"));
                     minecraft.hud.addChat("  &eHacks: &a" + (minecraft.settings.hacksEnabled ? "Enabled" : "Disabled"));
-                    minecraft.hud.addChat("  &eSpeedHack: &a" +
-                            ((minecraft.settings.hackType == 0) ? "Normal" : "Advanced"));
+                    minecraft.hud.addChat("  &eSpeedHack: &a"
+                            + ((minecraft.settings.hackType == 0) ? "Normal" : "Advanced"));
                 } else {
                     minecraft.hud.addChat("&eTo see a list of client commands type in &a/Client Help");
                 }
@@ -246,21 +248,15 @@ public class ChatInputScreen extends GuiScreen {
             insertTextAtCaret(minecraft.hud.hoveredPlayer + " ");
         }
         if (clickType == 0) {
-            for (int i = 0; i < minecraft.hud.chat.size(); i++) {
-                for (ChatScreenData data : minecraft.hud.chatsOnScreen) {
-                    if (x > data.bounds.maxX && x < data.bounds.minX && y > data.bounds.maxY && y < data.bounds.minY) {
-                        ChatClickData chatClickData = new ChatClickData(fontRenderer, minecraft.hud.chat.get(i));
-                        if (data.string.equals(chatClickData.message)) {
-                            for (LinkData ld : chatClickData.getClickedUrls()) {
-                                if (ld != null) {
-                                    if (x > ld.x0 && x < ld.x1 && y > data.bounds.maxY && y < data.bounds.minY) {
-                                        String s = FontRenderer.stripColor(ld.link);
-                                        URI uri = chatClickData.getURI(s);
-                                        if (uri != null) {
-                                            openWebPage(uri);
-                                        }
-                                    }
-                                }
+            for (ChatScreenData chatLine : minecraft.hud.chatsOnScreen) {
+                if (x >= chatLine.bounds.maxX && x <= chatLine.bounds.minX && y >= chatLine.bounds.maxY && y <= chatLine.bounds.minY) {
+                    ChatClickData chatClickData = new ChatClickData(fontRenderer, chatLine.string);
+                    for (LinkData link : chatClickData.getClickedUrls()) {
+                        if (x >= 4 + link.x0 && x <= 4 + link.x1) {
+                            String s = FontRenderer.stripColor(link.link);
+                            URI uri = chatClickData.getURI(s);
+                            if (uri != null) {
+                                openWebPage(uri);
                             }
                         }
                     }
@@ -287,51 +283,41 @@ public class ChatInputScreen extends GuiScreen {
 
     @Override
     public void render(int paramInt1, int paramInt2) {
-        // super.drawBox(2, height - 14, width - 2, height - 2, -2147483648);
-        char[] temp = new char[128];
-        for (int a = 0; a < inputLine.length(); a++) {
-            temp[a] = inputLine.toCharArray()[a];
+        String lineWithCaret, line;
+
+        lineWithCaret = "> " + inputLine.substring(0, caretPos) + "_";
+        if (inputLine.length() > caretPos) {
+            lineWithCaret += inputLine.substring(caretPos + 1);
         }
 
-        if (temp.length == 0) {
-            temp[temp.length] = tickCount / 6 % 2 == 0 ? '_' : ' ';
+        boolean makeCaret = (tickCount / 6 % 2 == 0);
+        if (makeCaret) {
+            line = lineWithCaret;
         } else {
-            temp[caretPos] = tickCount / 6 % 2 == 0 ? '_' : temp[caretPos];
+            line = "> " + inputLine;
         }
 
-        String string = "";
-        String messageNoCaret = "";
-        for (int i = 0; i < temp.length; i++) {
-            if (i != caretPos) {
-                messageNoCaret += temp[i];
-            }
-            string += temp[i];
-        }
         int x1 = 2;
         /*
          * Add the beginning position of the box + the length of '> _' + the
          * length of the trimmed message + the x position of the '> _' string.
          */
-        int x2 = x1 + fontRenderer.getWidth("> _" + messageNoCaret.replace(" ", "..").trim()) + 4;
+        int x2 = x1 + fontRenderer.getWidth(lineWithCaret) + 4;
 
         int y1 = height - 14;
         int y2 = y1 + 12;
-        super.drawBox(x1, y1, x2, y2, ChatRGB);
+        GuiScreen.drawBox(x1, y1, x2, y2, ChatRGB);
+        drawString(fontRenderer, line, 4, height - 12, 14737632);
 
-        drawString(fontRenderer, "> " + string, 4, height - 12, 14737632);
-        float scale = 0.6f;
+        int chatSpacing = (int) Math.ceil(9 * minecraft.settings.scale);
         int x = Mouse.getEventX() * width / minecraft.width;
         int y = height - Mouse.getEventY() * height / minecraft.height - 1;
-        for (int i = 0; i < minecraft.hud.chat.size(); i++) {
-            for (ChatScreenData data : minecraft.hud.chatsOnScreen) {
-                if (x > data.bounds.maxX && x < data.bounds.minX && y > data.bounds.maxY && y < data.bounds.minY) {
-                    ChatClickData chatClickData = new ChatClickData(fontRenderer, minecraft.hud.chat.get(i));
-                    if (data.string.equals(chatClickData.message)) {
-                        for (LinkData ld : chatClickData.getClickedUrls()) {
-                            if (ld != null && (x > ld.x0 && x < ld.x1 && y > data.bounds.maxY && y < data.bounds.minY)) {
-                                super.drawBox(ld.x0, data.y - 1, ld.x1 + 3 * scale, data.y + 9 * scale, -2147483648);
-                            }
-                        }
+        for (ChatScreenData chatLine : minecraft.hud.chatsOnScreen) {
+            if (x > chatLine.bounds.maxX && x < chatLine.bounds.minX && y > chatLine.bounds.maxY && y < chatLine.bounds.minY) {
+                ChatClickData chatClickData = new ChatClickData(fontRenderer, chatLine.string);
+                for (LinkData link : chatClickData.getClickedUrls()) {
+                    if (x > 3 + link.x0 && x < 3 + link.x1) {
+                        GuiScreen.drawBox(3 + link.x0, chatLine.y, 5 + link.x1, chatLine.y + chatSpacing, -2147483648);
                     }
                 }
             }

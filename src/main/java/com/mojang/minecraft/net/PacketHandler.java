@@ -23,22 +23,19 @@ import com.mojang.minecraft.gui.HUDScreen;
 import com.mojang.minecraft.level.Level;
 import com.mojang.minecraft.level.LevelLoader;
 import com.mojang.minecraft.level.tile.Block;
-import com.mojang.minecraft.level.tile.TextureSide;
+import com.mojang.minecraft.level.tile.BlockID;
+import com.mojang.minecraft.mob.HumanoidMob;
+import com.mojang.minecraft.model.Model;
 import com.mojang.minecraft.model.ModelManager;
 import com.mojang.minecraft.physics.CustomAABB;
-import com.mojang.minecraft.render.TextureManager;
 import com.mojang.util.ColorCache;
 import com.mojang.util.LogUtil;
 import com.mojang.util.MathHelper;
 import com.oyasunadev.mcraft.client.util.Constants;
-import java.util.HashSet;
-import java.util.Set;
 
 // This class is responsible for responding to individual packets coming from the client.
 // It also handles CPE Negotiation process.
 public final class PacketHandler {
-
-    private final Set<ProtocolExtension> enabledExtensions = new HashSet<>();
 
     private int extEntriesExpected, extEntriesReceived;
     private boolean receivedExtInfo;
@@ -46,6 +43,7 @@ public final class PacketHandler {
     private final Minecraft minecraft;
 
     public boolean isLoadingLevel;
+    private long lastLevelProgress;
 
     // This object is used to store the level object while it's being loaded.
     // Packets that modify can modify the level before it loaded (like ENV_SET_COLOR)
@@ -134,11 +132,19 @@ public final class PacketHandler {
             short chunkLength = (short) packetParams[0];
             byte[] chunkData = (byte[]) packetParams[1];
             byte percentComplete = (byte) packetParams[2];
-            networkManager.minecraft.progressBar.setProgress(percentComplete);
+
+            // Update progress bar at most 10 times per second, to avoid long map load times.
+            long now = System.currentTimeMillis();
+            if (now - lastLevelProgress > 50) {
+                // setProgress forces a full screen refresh, use sparingly!
+                minecraft.progressBar.setProgress(percentComplete);
+                lastLevelProgress = now;
+            }
+
             networkManager.levelData.write(chunkData, 0, chunkLength);
 
         } else if (packetType == PacketType.LEVEL_FINALIZE) {
-            networkManager.minecraft.progressBar.setProgress(100);
+            minecraft.progressBar.setProgress(100);
             try {
                 networkManager.levelData.close();
             } catch (IOException ex) {
@@ -161,45 +167,32 @@ public final class PacketHandler {
 
         } else if (packetType == PacketType.BLOCK_CHANGE) {
             if (minecraft.level != null) {
-                networkManager.minecraft.level.netSetTile(
+                minecraft.level.netSetTile(
                         (short) packetParams[0], (short) packetParams[1],
                         (short) packetParams[2], (byte) packetParams[3]);
             } // else: no level is loaded, ignore block change
 
         } else if (packetType == PacketType.SPAWN_PLAYER) {
-            byte newPlayerId = (Byte) packetParams[0];
-            String newPlayerName = (String) packetParams[1];
-            short newPlayerX = (Short) packetParams[2];
-            short newPlayerY = (Short) packetParams[3];
-            short newPlayerZ = (Short) packetParams[4];
-            byte newPlayerXRot = (Byte) packetParams[5];
-            byte newPlayerYRot = (Byte) packetParams[6];
-            if (newPlayerId >= 0) {
-                // Spawn a new player
-                newPlayerXRot = (byte) (newPlayerXRot + 128);
-                newPlayerY = (short) (newPlayerY - 22);
-                NetworkPlayer newPlayer = new NetworkPlayer(networkManager.minecraft,
-                        newPlayerName, newPlayerX, newPlayerY, newPlayerZ,
-                        newPlayerYRot * 360 / 256F, newPlayerXRot * 360 / 256F);
-                networkManager.addPlayer(newPlayerId, newPlayer);
-                minecraft.level.addEntity(newPlayer);
-            } else {
-                // Set own spawnpoint
-                minecraft.level.setSpawnPos(
-                        newPlayerX / 32, newPlayerY / 32, newPlayerZ / 32,
-                        newPlayerXRot * 320 / 256);
-                minecraft.player.moveTo(newPlayerX / 32F,
-                        newPlayerY / 32F, newPlayerZ / 32F,
-                        newPlayerXRot * 360 / 256F, newPlayerYRot * 360 / 256F);
+            if (networkManager.isExtEnabled(ProtocolExtension.EXT_PLAYER_LIST_2)) {
+                LogUtil.logWarning("Server tried to send SPAWN_PLAYER even though ExtPlayerList version 2 is in use.");
+                return;
             }
+            byte newPlayerId = (byte) packetParams[0];
+            String newPlayerName = (String) packetParams[1];
+            short newPlayerX = (short) packetParams[2];
+            short newPlayerY = (short) packetParams[3];
+            short newPlayerZ = (short) packetParams[4];
+            byte newPlayerXRot = (byte) packetParams[5];
+            byte newPlayerYRot = (byte) packetParams[6];
+            handleSpawnPlayer(networkManager, newPlayerName, newPlayerId, newPlayerX, newPlayerY, newPlayerZ, newPlayerXRot, newPlayerYRot);
 
         } else if (packetType == PacketType.POSITION_ROTATION) {
-            byte playerId = (Byte) packetParams[0];
-            short newX = (Short) packetParams[1];
-            short newY = (Short) packetParams[2];
-            short newZ = (Short) packetParams[3];
-            byte newXRot = (Byte) packetParams[4];
-            byte newYRot = (Byte) packetParams[5];
+            byte playerId = (byte) packetParams[0];
+            short newX = (short) packetParams[1];
+            short newY = (short) packetParams[2];
+            short newZ = (short) packetParams[3];
+            byte newXRot = (byte) packetParams[4];
+            byte newYRot = (byte) packetParams[5];
             if (playerId < 0) {
                 // Move self
                 minecraft.player.moveTo(newX / 32F, newY / 32F, newZ / 32F,
@@ -232,9 +225,9 @@ public final class PacketHandler {
             } // else: This packet cannot be applied to self, and is ignored if playerId<0
 
         } else if (packetType == PacketType.ROTATION_UPDATE) {
-            byte playerID = (Byte) packetParams[0];
-            byte newXRot = (Byte) packetParams[1];
-            byte newYRot = (Byte) packetParams[2];
+            byte playerID = (byte) packetParams[0];
+            byte newXRot = (byte) packetParams[1];
+            byte newYRot = (byte) packetParams[2];
             if (playerID >= 0) {
                 newXRot = (byte) (newXRot + 128);
                 NetworkPlayer networkPlayerInstance = networkManager.getPlayer(playerID);
@@ -244,25 +237,25 @@ public final class PacketHandler {
             } // else: This packet cannot be applied to self, and is ignored if playerId<0
 
         } else if (packetType == PacketType.POSITION_UPDATE) {
-            byte playerID = (Byte) packetParams[0];
+            byte playerID = (byte) packetParams[0];
             NetworkPlayer networkPlayerInstance = networkManager.getPlayer(playerID);
             if (playerID >= 0 && networkPlayerInstance != null) {
-                networkPlayerInstance.queue((Byte) packetParams[1],
-                        (Byte) packetParams[2], (Byte) packetParams[3]);
+                networkPlayerInstance.queue((byte) packetParams[1],
+                        (byte) packetParams[2], (byte) packetParams[3]);
             } // else: This packet cannot be applied to self, and is ignored if playerId<0
 
         } else if (packetType == PacketType.DESPAWN_PLAYER) {
-            byte playerID = (Byte) packetParams[0];
+            byte playerID = (byte) packetParams[0];
             NetworkPlayer targetPlayer = networkManager.removePlayer(playerID);
             if (playerID >= 0 && targetPlayer != null) {
-                targetPlayer.clear();
+                targetPlayer.unloadSkin(minecraft.textureManager);
                 minecraft.level.removeEntity(targetPlayer);
             } // else: This packet cannot be applied to self, and is ignored if playerId<0
 
         } else if (packetType == PacketType.CHAT_MESSAGE) {
-            byte messageType = (Byte) packetParams[0];
+            byte messageType = (byte) packetParams[0];
             String message = (String) packetParams[1];
-            if (messageType > 0 && isExtEnabled(ProtocolExtension.MESSAGE_TYPES)) {
+            if (messageType > 0 && networkManager.isExtEnabled(ProtocolExtension.MESSAGE_TYPES)) {
                 // MESSAGE_TYPES CPE
                 switch (messageType) {
                     case 1:
@@ -292,7 +285,7 @@ public final class PacketHandler {
                         minecraft.hud.addChat(message);
                         break;
                 }
-            } else if (messageType < 0 && !isExtEnabled(ProtocolExtension.MESSAGE_TYPES)) {
+            } else if (messageType < 0 && !networkManager.isExtEnabled(ProtocolExtension.MESSAGE_TYPES)) {
                 // For compatibility with vanilla Minecraft: negative ID colors a message yellow
                 minecraft.hud.addChat("&e" + message);
             } else {
@@ -337,11 +330,11 @@ public final class PacketHandler {
                 LogUtil.logInfo(String.format("Receiving ext: %s with version: %d",
                         serverExt.name, serverExt.version));
                 if (ProtocolExtension.isSupported(serverExt)) {
-                    enableExtension(serverExt);
+                    networkManager.enableExtension(serverExt);
                 }
 
                 if (extEntriesExpected == extEntriesReceived) {
-                    ProtocolExtension[] enabledExtList = listEnabledExtensions();
+                    ProtocolExtension[] enabledExtList = networkManager.listEnabledExtensions();
                     LogUtil.logInfo(String.format(
                             "Sending list of mutually-supported CPE extensions (%d)",
                             enabledExtList.length));
@@ -358,7 +351,7 @@ public final class PacketHandler {
             }
 
         } else if (packetType == PacketType.SELECTION_CUBOID) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.SELECTION_CUBOID)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.SELECTION_CUBOID)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: SelectionCuboid");
             }
             Level level = minecraft.level;
@@ -387,7 +380,7 @@ public final class PacketHandler {
             minecraft.selectionBoxes.put(selectionId, data);
 
         } else if (packetType == PacketType.REMOVE_SELECTION_CUBOID) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.SELECTION_CUBOID)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.SELECTION_CUBOID)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: SelectionCuboid");
             }
             byte selectionId = (byte) packetParams[0];
@@ -396,7 +389,7 @@ public final class PacketHandler {
             }
 
         } else if (packetType == PacketType.ENV_SET_COLOR) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.ENV_COLORS)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.ENV_COLORS)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: EnvColors");
             }
             byte envVariable = (byte) packetParams[0];
@@ -460,7 +453,7 @@ public final class PacketHandler {
             }
 
         } else if (packetType == PacketType.ENV_SET_MAP_APPEARANCE) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.ENV_MAP_APPEARANCE)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.ENV_MAP_APPEARANCE)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: EnvMapAppearance");
             }
             String textureUrl = (String) packetParams[0];
@@ -478,21 +471,15 @@ public final class PacketHandler {
             }
 
             if (sideBlock > 0 && sideBlock < Block.blocks.length) {
-                int ID = Block.blocks[sideBlock].textureId;
-                minecraft.textureManager.customSideBlock = minecraft.textureManager.textureAtlas.get(ID);
+                minecraft.textureManager.setSideBlock(sideBlock);
             } else {
-                minecraft.textureManager.customSideBlock = null;
+                minecraft.textureManager.resetSideBlock();
             }
             if (edgeBlock > 0 && edgeBlock < Block.blocks.length) {
-                Block block = Block.blocks[edgeBlock];
-                int ID = block.getTextureId(TextureSide.Top);
-                minecraft.textureManager.customEdgeBlock = minecraft.textureManager.textureAtlas.get(ID);
+                minecraft.textureManager.setEdgeBlock(edgeBlock);
             } else {
-                minecraft.textureManager.customEdgeBlock = null;
+                minecraft.textureManager.resetEdgeBlock();
             }
-
-            minecraft.textureManager.forceTextureReload("customEdge");
-            minecraft.textureManager.forceTextureReload("customSide");
 
             if (minecraft.level != null) {
                 minecraft.levelRenderer.refreshEnvironment();
@@ -515,29 +502,26 @@ public final class PacketHandler {
                     }
                     image = ImageIO.read(file);
                     if (image.getWidth() % 16 == 0 && image.getHeight() % 16 == 0) {
-                        minecraft.textureManager.animations.clear();
-                        minecraft.textureManager.currentTerrainPng = image;
+                        minecraft.textureManager.setTerrainTexture(image);
+                    } else {
+                        LogUtil.logInfo("Unacceptable terrain texture dimensions: " + image.getWidth() + " x " + image.getHeight());
                     }
                 }
             } else {
                 // Reset texture to default
-                try {
-                    minecraft.textureManager.currentTerrainPng = ImageIO.read(
-                            TextureManager.class.getResourceAsStream("/terrain.png"));
-                } catch (IOException ex2) {
-                    LogUtil.logError("Error reading default terrain texture.", ex2);
-                }
+                LogUtil.logInfo("Reset terrain texture to default.");
+                minecraft.textureManager.setTerrainTexture(null);
             }
 
         } else if (packetType == PacketType.CLICK_DISTANCE) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.CLICK_DISTANCE)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.CLICK_DISTANCE)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: ClickDistance");
             }
             short clickDistance = (short) packetParams[0];
             minecraft.gamemode.reachDistance = clickDistance / 32;
 
         } else if (packetType == PacketType.HOLD_THIS) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.HELD_BLOCK)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.HELD_BLOCK)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: HeldBlock");
             }
             byte blockToHold = (byte) packetParams[0];
@@ -565,7 +549,9 @@ public final class PacketHandler {
             //minecraft.hotKeys.add(data);
 
         } else if (packetType == PacketType.EXT_ADD_PLAYER_NAME) {
-            LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList");
+            if (!networkManager.isExtEnabled(ProtocolExtension.EXT_PLAYER_LIST_2)) {
+                LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList");
+            }
             short nameId = (short) packetParams[0];
             String playerName = (String) packetParams[1];
             String listName = (String) packetParams[2];
@@ -596,31 +582,14 @@ public final class PacketHandler {
         } else if (packetType == PacketType.EXT_ADD_ENTITY) {
             LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList version 1");
             byte playerID = (byte) packetParams[0];
-            String InGameName = (String) packetParams[1];
+            String inGameName = (String) packetParams[1];
             String skinName = (String) packetParams[2];
-            if (skinName != null) {
-                if (playerID >= 0) {
-                    NetworkPlayer tmp = networkManager.getPlayer(playerID);
-                    if (tmp != null) {
-                        tmp.defaultTexture = false;
-                        if ("default".equals(skinName)) {
-                            tmp.defaultTexture = true;
-                        }
-                        tmp.SkinName = skinName;
-                        tmp.downloadSkin(tmp.SkinName);
-                        tmp.bindTexture(minecraft.textureManager);
-                        tmp.displayName = InGameName;
-                        tmp.renderHover(minecraft.textureManager);
-                    }
-                } else if (playerID == -1) {
-                    minecraft.player.textureName = skinName;
-                    new SkinDownloadThread(minecraft.player, skinName).start();
-                    minecraft.player.bindTexture(minecraft.textureManager);
-                    //No need to set the display name for yourself
-                }
-            }
+            handleExtAddEntity(networkManager, playerID, inGameName, skinName);
+
         } else if (packetType == PacketType.EXT_REMOVE_PLAYER_NAME) {
-            LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList");
+            if (!networkManager.isExtEnabled(ProtocolExtension.EXT_PLAYER_LIST_2)) {
+                LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList");
+            }
             short nameID = (short) packetParams[0];
             List<PlayerListNameData> cache = minecraft.playerListNameData;
             for (int q = 0; q < minecraft.playerListNameData.size(); q++) {
@@ -631,7 +600,7 @@ public final class PacketHandler {
             minecraft.playerListNameData = cache;
 
         } else if (packetType == PacketType.CUSTOM_BLOCK_SUPPORT_LEVEL) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.CUSTOM_BLOCKS)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.CUSTOM_BLOCKS)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: CustomBlocks");
             }
             byte supportLevel = (byte) packetParams[0];
@@ -642,7 +611,7 @@ public final class PacketHandler {
             SessionData.setAllowedBlocks(supportLevel);
 
         } else if (packetType == PacketType.SET_BLOCK_PERMISSIONS) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.BLOCK_PERMISSIONS)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.BLOCK_PERMISSIONS)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: BlockPermissions");
             }
             byte blockType = (byte) packetParams[0];
@@ -654,52 +623,53 @@ public final class PacketHandler {
             } else {
                 if (allowPlacement == 0) {
                     if (minecraft.disallowedPlacementBlocks.add(block)) {
-                        LogUtil.logInfo("Disallowing placement of block: " + blockType);
+                        LogUtil.logInfo("Disallowing placement of block: " + BlockID.findName(blockType));
                     }
                 } else if (minecraft.disallowedPlacementBlocks.remove(block)) {
-                    LogUtil.logInfo("Allowing placement of block: " + blockType);
+                    LogUtil.logInfo("Allowing placement of block: " + BlockID.findName(blockType));
                 }
                 if (allowDeletion == 0) {
                     if (minecraft.disallowedBreakingBlocks.add(block)) {
-                        LogUtil.logInfo("Disallowing deletion of block: " + blockType);
+                        LogUtil.logInfo("Disallowing deletion of block: " + BlockID.findName(blockType));
                     }
                 } else if (minecraft.disallowedBreakingBlocks.remove(block)) {
-                    LogUtil.logInfo("Allowing deletion of block: " + blockType);
+                    LogUtil.logInfo("Allowing deletion of block: " + BlockID.findName(blockType));
                 }
             }
 
         } else if (packetType == PacketType.CHANGE_MODEL) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.CHANGE_MODEL)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.CHANGE_MODEL)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: ChangeModel");
             }
             byte playerId = (byte) packetParams[0];
             // Model names are case-insensitive
             String modelName = ((String) packetParams[1]).toLowerCase();
+            HumanoidMob targetPlayer;
+            //LogUtil.logInfo("CM: " + playerId + " " + modelName);
+
             if (playerId >= 0) {
                 // Set another player's model
-                NetworkPlayer netPlayer = networkManager.getPlayer(playerId);
-                if (netPlayer != null) {
-                    ModelManager m = new ModelManager();
-                    if (m.getModel(modelName) == null) {
-                        netPlayer.modelName = "humanoid";
-                    } else {
-                        netPlayer.modelName = modelName;
-                    }
-                    netPlayer.bindTexture(minecraft.textureManager);
-                }
-            } else if (playerId == -1) {
+                targetPlayer = networkManager.getPlayer(playerId);
+            } else {
                 // Set own model
-                ModelManager modelManager = new ModelManager();
-                if (modelManager.getModel(modelName) == null) {
-                    minecraft.player.modelName = "humanoid";
+                targetPlayer = minecraft.player;
+            }
+            if (targetPlayer != null && !targetPlayer.getModelName().equals(modelName)) {
+                ModelManager m = new ModelManager();
+                if (m.getModel(modelName) != null) {
+                    targetPlayer.setModel(modelName);
                 } else {
-                    minecraft.player.modelName = modelName;
+                    // Unknown model name given -- reset to humanoid
+                    targetPlayer.setModel(Model.HUMANOID);
                 }
-                minecraft.player.bindTexture(minecraft.textureManager);
+
+                if (targetPlayer.getModelName().equals(Model.HUMANOID)) {
+                    targetPlayer.setSkin(targetPlayer.lastHumanoidSkinName);
+                }
             }
 
         } else if (packetType == PacketType.ENV_SET_WEATHER_TYPE) {
-            if (!ProtocolExtension.isSupported(ProtocolExtension.ENV_WEATHER_TYPE)) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.ENV_WEATHER_TYPE)) {
                 LogUtil.logWarning("Server attempted to use unsupported extension: EnvWeatherType");
             }
             byte weatherType = (byte) packetParams[0];
@@ -713,23 +683,71 @@ public final class PacketHandler {
                 minecraft.isSnowing = !minecraft.isSnowing;
                 minecraft.isRaining = false;
             }
+
+        } else if (packetType == PacketType.EXT_ADD_ENTITY2) {
+            if (!networkManager.isExtEnabled(ProtocolExtension.EXT_PLAYER_LIST_2)) {
+                LogUtil.logWarning("Server attempted to use unsupported extension: ExtPlayerList version 2");
+            }
+            // "When an ExtAddEntity2 packet is received, it must be treated as the SpawnPlayer packet.
+            // A player model must be spawned in-game at the given location, with InGameName text
+            // drawn above it. Skin should be loaded using the given SkinName for a player name.
+            // When client receives ExtAddEntity2 packet for an already-spawned player, a duplicate
+            // entity must not be spawned and existing entity's position must not be changed.
+            // Instead their InGameName and SkinName must be updated. If a negative EntityID is
+            // given for ExtAddEntity2, client must update player's own spawn point, InGameName, and SkinName."
+            byte playerID = (byte) packetParams[0];
+            String inGameName = (String) packetParams[1];
+            String skinName = (String) packetParams[2];
+            short spawnX = (short) packetParams[3];
+            short spawnY = (short) packetParams[4];
+            short spawnZ = (short) packetParams[5];
+            byte spawnYaw = (byte) packetParams[6];
+            byte spawnPitch = (byte) packetParams[7];
+            //LogUtil.logInfo("EAE2: " + playerID + " " + inGameName + " " + skinName);
+
+            if (playerID < 0 || networkManager.getPlayer(playerID) == null) {
+                handleSpawnPlayer(networkManager, inGameName, playerID, spawnX, spawnY, spawnZ, spawnYaw, spawnPitch);
+            }
+
+            handleExtAddEntity(networkManager, playerID, inGameName, skinName);
         }
     }
 
-    /**
-     * Checks whether an extension is currently enabled (and mutually supported) by this client and
-     * the server that we are currently connected to.
-     */
-    public boolean isExtEnabled(ProtocolExtension ext) {
-        return enabledExtensions.contains(ext);
+    private void handleExtAddEntity(NetworkManager networkManager, byte playerID, String inGameName, String skinName) {
+        if (skinName != null) {
+            if (playerID >= 0) {
+                NetworkPlayer targetPlayer = networkManager.getPlayer(playerID);
+                if (targetPlayer != null) {
+                    targetPlayer.setSkin(skinName);
+                    targetPlayer.lastHumanoidSkinName = skinName;
+                    targetPlayer.displayName = inGameName;
+                }
+            } else {
+                minecraft.player.setSkin(skinName);
+                minecraft.player.lastHumanoidSkinName = skinName;
+                //No need to set the display name for yourself
+            }
+        }
     }
 
-    public ProtocolExtension[] listEnabledExtensions() {
-        ProtocolExtension[] extList = new ProtocolExtension[enabledExtensions.size()];
-        return enabledExtensions.toArray(extList);
-    }
-
-    public void enableExtension(ProtocolExtension ext) {
-        enabledExtensions.add(ext);
+    private void handleSpawnPlayer(NetworkManager networkManager, String newPlayerName, byte newPlayerId,
+            short newPlayerX, short newPlayerY, short newPlayerZ, byte newPlayerXRot, byte newPlayerYRot) {
+        if (newPlayerId >= 0) {
+            newPlayerXRot = (byte) (newPlayerXRot + 128);
+            newPlayerY = (short) (newPlayerY - 22);
+            NetworkPlayer newPlayer
+                    = new NetworkPlayer(minecraft,
+                            newPlayerName, newPlayerX, newPlayerY, newPlayerZ,
+                            newPlayerYRot * 360 / 256F, newPlayerXRot * 360 / 256F);
+            networkManager.addPlayer(newPlayerId, newPlayer);
+            minecraft.level.addEntity(newPlayer);
+        } else {
+            // Set own spawnpoint
+            minecraft.level.setSpawnPos(newPlayerX / 32, newPlayerY / 32, newPlayerZ / 32,
+                    newPlayerXRot * 320 / 256);
+            minecraft.player.moveTo(newPlayerX / 32F,
+                    newPlayerY / 32F, newPlayerZ / 32F,
+                    newPlayerXRot * 360 / 256F, newPlayerYRot * 360 / 256F);
+        }
     }
 }

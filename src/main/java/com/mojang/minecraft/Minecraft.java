@@ -71,7 +71,6 @@ import com.mojang.minecraft.net.NetworkPlayer;
 import com.mojang.minecraft.net.PacketHandler;
 import com.mojang.minecraft.net.PacketType;
 import com.mojang.minecraft.net.ProtocolExtension;
-import com.mojang.minecraft.net.SkinDownloadThread;
 import com.mojang.minecraft.net.WOMConfig;
 import com.mojang.minecraft.particle.Particle;
 import com.mojang.minecraft.particle.ParticleManager;
@@ -98,6 +97,7 @@ import com.mojang.util.MathHelper;
 import com.mojang.util.StreamingUtil;
 import com.mojang.util.Timer;
 import com.mojang.util.Vec3D;
+import com.oyasunadev.mcraft.client.util.Constants;
 import java.security.NoSuchAlgorithmException;
 
 public final class Minecraft implements Runnable {
@@ -131,7 +131,7 @@ public final class Minecraft implements Runnable {
     /**
      * The url of the skin server where the skins are located.
      */
-    public String skinServer = "http://www.classicube.net/static/skins/";
+    public static String skinServer = "http://www.classicube.net/static/skins/";
     /**
      * The current GameMode.
      */
@@ -308,7 +308,7 @@ public final class Minecraft implements Runnable {
      * Creates a new Minecraft instance.
      *
      * @param canvas Canvas to use for drawing.
-     * @param applet Applet of this instance
+     * @param applet applet of this instance
      * @param width Width of the window
      * @param height Height of the window
      * @param fullscreen True if game should be in fullscreen
@@ -702,7 +702,7 @@ public final class Minecraft implements Runnable {
         checkGLError("Pre startup");
 
         GL11.glEnable(GL11.GL_TEXTURE_2D);
-        GL11.glShadeModel(GL11.GL_SMOOTH);
+        GL11.glShadeModel(GL11.GL_FLAT);
         GL11.glClearDepth(1D);
         GL11.glEnable(GL11.GL_DEPTH_TEST);
         GL11.glDepthFunc(GL11.GL_LEQUAL);
@@ -720,7 +720,6 @@ public final class Minecraft implements Runnable {
 
         ShapeRenderer.instance = new ShapeRenderer(2097152, settings); // 2MB
         textureManager = new TextureManager(settings, isApplet);
-        textureManager.registerAnimations();
 
         if (settings.lastUsedTexturePack != null) {
             // Try to load custom texture pack
@@ -735,9 +734,8 @@ public final class Minecraft implements Runnable {
             }
         }
 
-        fontRenderer = new FontRenderer(settings, Textures.FONT, textureManager);
+        fontRenderer = new FontRenderer(settings, textureManager);
         monitoringThread = new MonitoringThread(1000); // 1s refresh
-        textureManager.initAtlas();
 
         levelRenderer = new LevelRenderer(this, textureManager);
         Item.initModels();
@@ -775,7 +773,7 @@ public final class Minecraft implements Runnable {
             }
         }
 
-        particleManager = new ParticleManager(textureManager);
+        particleManager = new ParticleManager();
         if (isLevelLoaded) {
             try {
                 cursor = new Cursor(16, 16, 0, 0, 1, BufferUtils.createIntBuffer(256), null);
@@ -804,11 +802,11 @@ public final class Minecraft implements Runnable {
         checkGLError("Post startup");
         hud = new HUDScreen(this, width, height);
         if (session != null) {
-            new SkinDownloadThread(player, skinServer + session.username + ".png").start();
+            player.setSkin(session.username);
         }
         if (server != null && session != null) {
             networkManager = new NetworkManager(this);
-            networkManager.beginConnect(server, port, session.username, session.mppass);
+            networkManager.beginConnect(server, port);
         }
     }
 
@@ -987,36 +985,34 @@ public final class Minecraft implements Runnable {
                         vec3D = newPlayerVector.add(var34 * reachDistance, var33 * reachDistance,
                                 var87 * reachDistance);
 
-                        // SURVIVAL: find a nearby entity to pick up
-                        if (isSurvival()) {
-                            renderer.entity = null;
-                            List<Entity> nearbyEntities = level.blockMap.getEntities(
-                                    player,
-                                    player.boundingBox.expand(var34 * reachDistance,
-                                            var33 * reachDistance, var87 * reachDistance)
-                            );
+                        renderer.entity = null;
+                        List<Entity> nearbyEntities = level.blockMap.getEntities(
+                                player,
+                                player.boundingBox.expand(var34 * reachDistance,
+                                        var33 * reachDistance, var87 * reachDistance)
+                        );
 
-                            float var35 = 0F;
-                            for (Entity entity : nearbyEntities) {
-                                if (entity.isPickable()) {
-                                    var74 = 0.1F;
-                                    MovingObjectPosition var78 = entity.boundingBox
-                                            .grow(var74, var74, var74)
-                                            .clip(newPlayerVector, vec3D);
-                                    if (var78 != null) {
-                                        var74 = newPlayerVector.distance(var78.vec);
-                                        if (var74 < var35 || var35 == 0F) {
-                                            renderer.entity = entity;
-                                            var35 = var74;
-                                        }
+                        // Find the closest entity (player)
+                        final float growFactor = 0.1F;
+                        float closestDist = 0F;
+                        for (Entity entity : nearbyEntities) {
+                            if (entity.isPickable()) {
+                                MovingObjectPosition var78 = entity.boundingBox
+                                        .grow(growFactor, growFactor, growFactor)
+                                        .clip(newPlayerVector, vec3D);
+                                if (var78 != null) {
+                                    float distanceToPlayer = newPlayerVector.distance(var78.vec);
+                                    if (distanceToPlayer < closestDist || closestDist == 0F) {
+                                        renderer.entity = entity;
+                                        closestDist = distanceToPlayer;
                                     }
                                 }
                             }
+                        }
 
-                            // SURVIVAL: place picked-up object into hand
-                            if (renderer.entity != null && isSurvival()) {
-                                selected = new MovingObjectPosition(renderer.entity);
-                            }
+                        // SURVIVAL: target entity
+                        if (renderer.entity != null && isSurvival()) {
+                            selected = new MovingObjectPosition(renderer.entity);
                         }
 
                         GL11.glViewport(0, 0, width, height);
@@ -1116,8 +1112,8 @@ public final class Minecraft implements Runnable {
                             if (settings.framerateLimit > 0) {
                                 // Adjust chunks-per-frame based on framerate. Back off is under 30fps.
                                 double minDesiredFramerate = Math.max(20, settings.framerateLimit / 2);
-                                int tempFps = (int) Math.floor(1 / timer.lastFrameDuration);
-                                String fpsStr = "[" + tempFps + " / " + minDesiredFramerate + "] ";
+                                //int tempFps = (int) Math.floor(1 / timer.lastFrameDuration);
+                                //String fpsStr = "[" + tempFps + " / " + minDesiredFramerate + "] ";
                                 if (timer.lastFrameDuration > 1 / minDesiredFramerate) {
                                     renderer.everBackedOffFromChunkUpdates = (renderer.dynamicChunkUpdateLimit > Renderer.MIN_CHUNK_UPDATES_PER_FRAME);
                                     //LogUtil.logInfo(fpsStr + "backing off from " + renderer.dynamicChunkUpdateLimit + " to " + Math.max(Renderer.MIN_CHUNK_UPDATES_PER_FRAME, renderer.dynamicChunkUpdateLimit - 2));
@@ -1204,19 +1200,21 @@ public final class Minecraft implements Runnable {
                         var69 = MathHelper.cos(player.xRot * (float) Math.PI / 180F);
 
                         for (int pass = 0; pass < 2; ++pass) {
-                            if (!particleManager.particles[pass].isEmpty()) {
+                            List<Particle> particles = (pass == 0 ? particleManager.particles0 : particleManager.particles1);
+
+                            if (!particles.isEmpty()) {
                                 int textureId = 0;
                                 if (pass == 0) {
-                                    textureId = particleManager.textureManager.load(Textures.PARTICLES);
+                                    textureId = textureManager.load(Textures.PARTICLES);
                                 } else if (pass == 1) {
-                                    textureId = particleManager.textureManager.load(Textures.TERRAIN);
+                                    textureId = textureManager.load(Textures.TERRAIN);
                                 }
 
                                 GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureId);
                                 shapeRenderer.begin();
 
-                                for (int i = 0; i < particleManager.particles[pass].size(); ++i) {
-                                    ((Particle) particleManager.particles[pass].get(i)).render(
+                                for (Particle particle : particles) {
+                                    particle.render(
                                             shapeRenderer, delta, var123, var69, newYRot, var117,
                                             var32);
                                 }
@@ -1345,14 +1343,15 @@ public final class Minecraft implements Runnable {
                         if (isRaining || isSnowing) {
                             renderer.drawWeather(delta, shapeRenderer);
                         }
-                        if (!isSinglePlayer && networkManager != null && networkManager.hasPlayers()) {
+                        if (!isSinglePlayer && networkManager != null) {
                             // Render other players' names
-                            if ((settings.showNames == 2 || settings.showNames == 3)
-                                    && this.player.userType >= 100) {
+                            if ((settings.showNames == 2 || settings.showNames == 3) && this.player.userType >= 100) {
+                                // Render all names
                                 for (NetworkPlayer np : networkManager.getPlayers()) {
                                     np.renderHover(textureManager);
                                 }
                             } else if (renderer.entity != null) {
+                                // Render on-hover
                                 renderer.entity.renderHover(textureManager);
                             }
                         }
@@ -1538,6 +1537,10 @@ public final class Minecraft implements Runnable {
                 player = (Player) newLevel.findSubclassOf(Player.class);
                 if (player == null) {
                     player = new Player(newLevel, settings);
+                    newLevel.player = player;
+                    if (session != null) {
+                        player.lastHumanoidSkinName = session.username;
+                    }
                 }
                 player.settings = settings;
                 player.resetPos();
@@ -1551,6 +1554,7 @@ public final class Minecraft implements Runnable {
 
         if (player == null) {
             player = new Player(newLevel, settings);
+            player.lastHumanoidSkinName = session.username;
             player.resetPos();
             gamemode.preparePlayer(player);
             if (newLevel != null) {
@@ -1579,17 +1583,12 @@ public final class Minecraft implements Runnable {
             if (newLevel != null) {
                 newLevel.particleEngine = particleManager;
             }
-
-            for (int pass = 0; pass < 2; ++pass) {
-                particleManager.particles[pass].clear();
-            }
+            particleManager.clear();
         }
 
         if (inventoryCache != null) {
             player.inventory.slots = inventoryCache;
         }
-
-        System.gc();
     }
 
     public final void shutdown() {
@@ -1701,24 +1700,7 @@ public final class Minecraft implements Runnable {
             }
         }
 
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load(Textures.TERRAIN));
-        TextureManager texManager = textureManager;
-
-        for (int i = 0; i < texManager.animations.size(); ++i) {
-            // Animate textures, like lava and water
-            TextureFX texFX = texManager.animations.get(i);
-            texFX.animate();
-            if (texManager.textureBuffer.capacity() != texFX.textureData.length) {
-                texManager.textureBuffer = BufferUtils.createByteBuffer(texFX.textureData.length);
-            } else {
-                texManager.textureBuffer.clear();
-            }
-            texManager.textureBuffer.put(texFX.textureData);
-            texManager.textureBuffer.position(0).limit(texFX.textureData.length);
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, texFX.textureId % 16 << 4,
-                    texFX.textureId / 16 << 4, 16, 16,
-                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, texManager.textureBuffer);
-        }
+        renderAnimatedTextures();
 
         if (networkManager != null && !(currentScreen instanceof ErrorScreen)) {
             if (networkManager.isConnected()) {
@@ -1807,9 +1789,36 @@ public final class Minecraft implements Runnable {
         }
     }
 
+    private void renderAnimatedTextures() {
+        GL11.glBindTexture(GL11.GL_TEXTURE_2D, textureManager.load(Textures.TERRAIN));
+        for (int i = 0; i < textureManager.animations.size(); ++i) {
+            // Animate textures, like lava and water
+            TextureFX texFX = textureManager.animations.get(i);
+            texFX.animate();
+            if (textureManager.textureBuffer.capacity() != texFX.textureData.length) {
+                textureManager.textureBuffer = BufferUtils.createByteBuffer(texFX.textureData.length);
+            } else {
+                textureManager.textureBuffer.clear();
+            }
+            textureManager.textureBuffer.put(texFX.textureData);
+            textureManager.textureBuffer.position(0).limit(texFX.textureData.length);
+            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, texFX.textureId % 16 << 4,
+                    texFX.textureId / 16 << 4, 16, 16,
+                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, textureManager.textureBuffer);
+        }
+    }
+
     private void doNetworking() {
         // Do network communication
         try {
+            if (!networkManager.handshakeSent) {
+                networkManager.send(
+                        PacketType.IDENTIFICATION,
+                        Constants.PROTOCOL_VERSION, session.username, session.mppass,
+                        (int) Constants.CLIENT_TYPE);
+                networkManager.handshakeSent = true;
+            }
+
             do {
                 networkManager.channel.read(networkManager.in);
                 for (int packetsReceived = 0;
@@ -1842,7 +1851,7 @@ public final class Minecraft implements Runnable {
             int playerXRotation = (int) (player.xRot * 256F / 360F) & 255;
             networkManager.send(
                     PacketType.POSITION_ROTATION,
-                    packetHandler.isExtEnabled(ProtocolExtension.HELD_BLOCK) ? player.inventory.getSelected() : -1,
+                    networkManager.isExtEnabled(ProtocolExtension.HELD_BLOCK) ? player.inventory.getSelected() : -1,
                     playerXUnits, playerYUnits, playerZUnits,
                     playerYRotation, playerXRotation);
         } catch (Exception ex) {
@@ -2156,6 +2165,6 @@ public final class Minecraft implements Runnable {
         networkManager = new NetworkManager(this);
         packetHandler = new PacketHandler(this);
         womConfig = new WOMConfig(this);
-        networkManager.beginConnect(server, port, session.username, session.mppass);
+        networkManager.beginConnect(server, port);
     }
 }
